@@ -1,0 +1,13 @@
+[
+  {
+    "name": "ketrics-app",
+    "description": "Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations.",
+    "path": "skills/ketrics-app",
+    "files": [
+      "skills/ketrics-app/SKILL.md",
+      "skills/ketrics-app/BACKEND_REFERENCE.md",
+      "skills/ketrics-app/FRONTEND_REFERENCE.md",
+      "skills/ketrics-app/CONFIG_AND_DEPLOY.md"
+    ]
+  }
+]
