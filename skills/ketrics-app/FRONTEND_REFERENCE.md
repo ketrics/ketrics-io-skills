@@ -32,17 +32,14 @@ class APIClient implements APIClientInterface {
       throw new Error("Missing authentication context");
     }
 
-    const response = await fetch(
-      `${runtimeApiUrl}/tenants/${tenantId}/applications/${applicationId}/functions/${fnName}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ payload: payload ?? null }),
-      }
-    );
+    const response = await fetch(`${runtimeApiUrl}/tenants/${tenantId}/applications/${applicationId}/functions/${fnName}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ payload: payload ?? null }),
+    });
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => null);
@@ -115,17 +112,17 @@ export function createMockClient() {
 import { apiClient } from "../services";
 
 // Simple call (no payload)
-const { result } = await apiClient.run("getConnections") as { result: { connections: Connection[] } };
+const { result } = (await apiClient.run("getConnections")) as { result: { connections: Connection[] } };
 
 // Call with payload
-const { result } = await apiClient.run("createItem", {
+const { result } = (await apiClient.run("createItem", {
   name: "My Item",
   description: "Item description",
-}) as { result: { item: Item } };
+})) as { result: { item: Item } };
 
 // Common pattern: wrap in a helper for cleaner component code
 const loadItems = async () => {
-  const { result } = await apiClient.run("listItems") as { result: { items: Item[] } };
+  const { result } = (await apiClient.run("listItems")) as { result: { items: Item[] } };
   return result.items;
 };
 ```
@@ -151,7 +148,7 @@ const handlers: Record<string, MockHandler> = {
 
   getItem: (payload: unknown) => {
     const { id } = payload as { id: string };
-    const item = itemsStore.find(i => i.id === id);
+    const item = itemsStore.find((i) => i.id === id);
     if (!item) throw new Error("Not found");
     return { item };
   },
@@ -173,7 +170,7 @@ const handlers: Record<string, MockHandler> = {
 
   updateItem: (payload: unknown) => {
     const { id, name, description } = payload as { id: string; name: string; description?: string };
-    const idx = itemsStore.findIndex(i => i.id === id);
+    const idx = itemsStore.findIndex((i) => i.id === id);
     if (idx === -1) throw new Error("Not found");
     itemsStore[idx] = { ...itemsStore[idx], name, description: description || "", updatedAt: new Date().toISOString() };
     return { item: itemsStore[idx] };
@@ -181,7 +178,7 @@ const handlers: Record<string, MockHandler> = {
 
   deleteItem: (payload: unknown) => {
     const { id } = payload as { id: string };
-    itemsStore = itemsStore.filter(i => i.id !== id);
+    itemsStore = itemsStore.filter((i) => i.id !== id);
     return { success: true };
   },
 
@@ -236,7 +233,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base: "./",  // Important for iframe embedding
+  base: "./", // Important for iframe embedding
 });
 ```
 
@@ -350,23 +347,23 @@ import { Plus, Trash2, Edit, Search, ChevronDown, Loader2 } from "lucide-react";
 
 ### Frequently used icons
 
-| Icon | Import | Use case |
-|------|--------|----------|
-| `Plus` | `lucide-react` | Create / Add actions |
-| `Trash2` | `lucide-react` | Delete actions |
-| `Edit` | `lucide-react` | Edit actions (alias: `Pencil`) |
-| `Search` | `lucide-react` | Search inputs |
-| `Loader2` | `lucide-react` | Loading spinners (add `animate-spin`) |
-| `CheckCircle` | `lucide-react` | Success / active status |
-| `XCircle` | `lucide-react` | Error / inactive status |
-| `AlertTriangle` | `lucide-react` | Warnings |
-| `Download` | `lucide-react` | Export / download actions |
-| `Upload` | `lucide-react` | Import / upload actions |
-| `ChevronDown` / `ChevronUp` | `lucide-react` | Expand / collapse toggles |
-| `ArrowLeft` | `lucide-react` | Back navigation |
-| `Settings` | `lucide-react` | Configuration views |
-| `Eye` / `EyeOff` | `lucide-react` | Visibility toggles |
-| `Filter` | `lucide-react` | Filter controls |
+| Icon                        | Import         | Use case                              |
+| --------------------------- | -------------- | ------------------------------------- |
+| `Plus`                      | `lucide-react` | Create / Add actions                  |
+| `Trash2`                    | `lucide-react` | Delete actions                        |
+| `Edit`                      | `lucide-react` | Edit actions (alias: `Pencil`)        |
+| `Search`                    | `lucide-react` | Search inputs                         |
+| `Loader2`                   | `lucide-react` | Loading spinners (add `animate-spin`) |
+| `CheckCircle`               | `lucide-react` | Success / active status               |
+| `XCircle`                   | `lucide-react` | Error / inactive status               |
+| `AlertTriangle`             | `lucide-react` | Warnings                              |
+| `Download`                  | `lucide-react` | Export / download actions             |
+| `Upload`                    | `lucide-react` | Import / upload actions               |
+| `ChevronDown` / `ChevronUp` | `lucide-react` | Expand / collapse toggles             |
+| `ArrowLeft`                 | `lucide-react` | Back navigation                       |
+| `Settings`                  | `lucide-react` | Configuration views                   |
+| `Eye` / `EyeOff`            | `lucide-react` | Visibility toggles                    |
+| `Filter`                    | `lucide-react` | Filter controls                       |
 
 ## Common frontend patterns
 
@@ -380,7 +377,7 @@ const fetchData = async () => {
   setLoading(true);
   setError(null);
   try {
-    const { result } = await apiClient.run("listItems") as { result: { items: Item[] } };
+    const { result } = (await apiClient.run("listItems")) as { result: { items: Item[] } };
     setItems(result.items);
   } catch (err) {
     setError(err instanceof Error ? err.message : "An error occurred");
@@ -395,7 +392,9 @@ const fetchData = async () => {
 ```typescript
 const handleExport = async () => {
   try {
-    const { result } = await apiClient.run("exportData", { /* payload */ }) as {
+    const { result } = (await apiClient.run("exportData", {
+      /* payload */
+    })) as {
       result: { url: string; filename: string };
     };
     const a = document.createElement("a");
@@ -541,4 +540,248 @@ const handleSubmitSelected = async () => {
   await apiClient.run("addItems", { items });
   setSelected(new Map()); // Clear selection
 };
+```
+
+## Application header layout
+
+The app header uses a fixed 56px bar with title on the left and configuration controls aligned to the right.
+
+### Structure
+
+- `.app-header`: flex container with `space-between`, white background, bottom border
+- `.app-header-left`: app title (`<h1>`)
+- `.app-header-right`: empresa selector, settings button (role-gated)
+
+### Example
+
+```tsx
+<header className="app-header">
+  <div className="app-header-left">
+    <h1>App Title</h1>
+  </div>
+  <div className="app-header-right">
+    <EmpresaSelector ... />
+    {permissions.isApprover && (
+      <button className="btn btn-secondary btn-sm" title="Configuración">
+        <Settings size={18} />
+      </button>
+    )}
+  </div>
+</header>
+```
+
+### CSS
+
+```css
+.app-header {
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+}
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+```
+
+## Toolbar pattern
+
+Toolbars appear above tables or lists with left/right groups for actions and controls.
+
+### Structure
+
+- `.toolbar`: flex container with `space-between`
+- `.toolbar-left`: search inputs, filter toggles, bulk actions
+- `.toolbar-right`: primary action buttons (Create, Export, Import)
+
+### Example
+
+```tsx
+<div className="toolbar">
+  <div className="toolbar-left">
+    <div style={{ position: "relative" }}>
+      <Search size={16} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#999" }} />
+      <input className="form-input" placeholder="Buscar..." style={{ paddingLeft: 32 }} />
+    </div>
+    <button className="btn btn-secondary btn-sm">
+      <Filter size={14} /> Filtros
+    </button>
+  </div>
+  <div className="toolbar-right">
+    {permissions.isEditor && (
+      <button className="btn btn-primary btn-sm">
+        <Plus size={14} /> Nueva solicitud
+      </button>
+    )}
+    <button className="btn btn-secondary btn-sm">
+      <Download size={14} /> Exportar
+    </button>
+  </div>
+</div>
+```
+
+### CSS
+
+```css
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+```
+
+## Styling conventions
+
+Ketrics apps use **vanilla CSS** in a single `App.css` file (no Tailwind). All styles follow these conventions.
+
+### Color palette
+
+| Token              | Value                 | Usage                                          |
+| ------------------ | --------------------- | ---------------------------------------------- |
+| Primary blue       | `#2563eb`             | Buttons, active tabs, links, focus rings       |
+| Primary hover      | `#1d4ed8`             | Hover states for primary elements              |
+| Success green      | `#16a34a`             | Approve buttons, success badges, boolean "yes" |
+| Danger red         | `#dc2626`             | Reject buttons, error messages, danger badges  |
+| Text primary       | `#1a1a1a` / `#333`    | Headings, body text                            |
+| Text secondary     | `#555` / `#666`       | Labels, descriptions                           |
+| Text muted         | `#888` / `#999`       | Metadata, placeholders, empty states           |
+| Border             | `#e0e0e0` / `#d1d5db` | Cards, tables, inputs                          |
+| Background page    | `#f5f5f5`             | Page background                                |
+| Background card    | `#fff`                | Cards, modals, header                          |
+| Background alt row | `#fafafa`             | Alternating table rows                         |
+| Row hover          | `#eef2ff`             | Table row hover                                |
+
+### Typography
+
+- **Font stack**: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif`
+- **Base size**: 14px on body
+- **Title** (`h1`): 18px, weight 600
+- **Section title**: 16px, weight 600
+- **Body / table cells**: 13px
+- **Labels**: 12px, weight 600, uppercase, `letter-spacing: 0.3px`
+- **Small text** (badges, metadata): 11-12px
+
+### Buttons
+
+Base class `.btn` with variant modifiers:
+
+```css
+.btn          /* inline-flex, gap 6px, padding 8px 16px, border-radius 6px, font 13px 500 */
+.btn-primary  /* bg #2563eb, white text */
+.btn-secondary /* bg white, gray border #d1d5db */
+.btn-success  /* bg #16a34a, white text */
+.btn-danger   /* bg #dc2626, white text */
+.btn-sm       /* padding 5px 10px, font 12px */
+.btn-link     /* no bg/border, blue underlined text */
+.btn:disabled /* opacity 0.5, cursor not-allowed */
+```
+
+### Badges
+
+Base class `.badge` (inline-block, pill shape, 11px uppercase):
+
+| Class              | Background | Text      | Use                 |
+| ------------------ | ---------- | --------- | ------------------- |
+| `.badge-pendiente` | `#fef3c7`  | `#92400e` | Pending status      |
+| `.badge-aprobada`  | `#d1fae5`  | `#065f46` | Approved status     |
+| `.badge-rechazada` | `#fee2e2`  | `#991b1b` | Rejected status     |
+| `.badge-softland`  | `#2563eb`  | white     | Softland field tag  |
+| `.badge-banking`   | `#dc2626`  | white     | Banking field tag   |
+| `.badge-attrs`     | `#6b7280`  | white     | Attribute field tag |
+
+### Tables
+
+```css
+.table-container  /* white bg, border, rounded corners, overflow hidden */
+.data-table       /* full width, collapse borders */
+.data-table th    /* bg #f8f9fa, 12px uppercase, gray text */
+.data-table td    /* 13px, light bottom border */
+.data-table tbody tr:nth-child(even) /* bg #fafafa */
+.data-table tbody tr:hover           /* bg #eef2ff, pointer cursor */
+```
+
+### Modals
+
+```css
+.modal-overlay  /* fixed fullscreen, semi-transparent black bg, z-index 1000 */
+.modal-card     /* white, rounded 12px, max-width 900px, flex column, shadow */
+.modal-card-sm  /* max-width 640px variant */
+.modal-header   /* flex space-between, bottom border */
+.modal-body     /* padding 20px, overflow-y auto, flex 1 */
+.modal-footer   /* flex end, gap 8px, top border */
+```
+
+### Tabs
+
+Two tab styles are used:
+
+1. **Navigation tabs** (`.tabs` + `.tab`): underline style, used for main app navigation
+2. **Filter tabs** (`.cr-filter-tabs` + `.cr-filter-tab`): pill style with rounded borders, used for status filtering
+
+Active state for both uses primary blue (`#2563eb`).
+
+### Forms
+
+```css
+.form-group    /* flex column, gap 4px */
+.form-label    /* 12px, weight 600, uppercase, color #555 */
+.form-input    /* padding 7px 10px, border #d1d5db, rounded 6px, 13px */
+.form-select   /* same as form-input */
+.form-textarea /* same + resize vertical, min-height 80px, full width */
+/* Focus state: border #2563eb, blue box-shadow ring */
+```
+
+### Grid layouts
+
+Responsive grids use CSS Grid with `auto-fill`:
+
+```css
+/* Filters grid */
+grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+
+/* Attributes grid */
+grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+```
+
+### Loading, empty, and error states
+
+```css
+.loading-container  /* flex center, padding 40px, gray text */
+.spinner           /* 20px circle, blue top border, CSS spin animation */
+.empty-state       /* text-align center, padding 40px, gray #999 text */
+.error-message     /* red text #dc2626, pink bg #fef2f2, red border #fecaca, rounded */
+```
+
+### Pagination
+
+```css
+.pagination      /* flex space-between, top border, bg #fafafa */
+.pagination-btn  /* bordered button, 13px, min-width 32px */
+.pagination-btn.active /* blue bg, white text */
 ```
