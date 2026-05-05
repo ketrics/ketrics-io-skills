@@ -1,6 +1,6 @@
 ---
 name: ketrics-app
-description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, or deploying to the Ketrics platform.
+description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, or deploying to the Ketrics platform.
 ---
 
 # Ketrics Application Builder
@@ -11,7 +11,7 @@ Build tenant applications on the Ketrics platform. This skill covers project sca
 
 A Ketrics app has two parts:
 
-1. **Backend** (`backend/src/index.ts`): Single TypeScript file exporting async handler functions. Uses the global `ketrics` object (typed by `@ketrics/sdk-backend`) with no imports needed. Built with esbuild into a single bundle.
+1. **Backend** (`backend/src/`): TypeScript handler functions organized across **domain-oriented files**, with `index.ts` acting as a thin re-export entry point. Uses the global `ketrics` object (typed by `@ketrics/sdk-backend`) with no imports needed. esbuild bundles the whole tree into a single `dist/index.js`. See [Backend file organization](#backend-file-organization) for the splitting pattern — apply it from day one rather than waiting for the file to grow.
 2. **Frontend** (`frontend/src/`): React app (Vite + TypeScript) embedded as an iframe. Uses `@ketrics/sdk-frontend` for auth. Calls backend handlers via a service layer.
 
 A `ketrics.config.json` at the project root declares the app name, runtime, action names, entry point, and resources.
@@ -26,7 +26,11 @@ my-ketrics-app/
 │   ├── package.json             # devDeps: @ketrics/sdk-backend, esbuild, typescript
 │   ├── tsconfig.json
 │   └── src/
-│       └── index.ts             # All handler functions (single file)
+│       ├── index.ts             # Thin re-exports — bundle entry point
+│       ├── types.ts             # Shared interfaces, no runtime code
+│       ├── permissions.ts       # RBAC helpers + getPermissions handler
+│       ├── helpers.ts           # Cross-cutting utilities (env, dates, SQL escape)
+│       └── <domain>.ts          # One file per domain (e.g., empresas.ts, libro.ts)
 ├── frontend/
 │   ├── package.json             # deps: react, @ketrics/sdk-frontend, vite
 │   ├── tsconfig.json
@@ -61,25 +65,18 @@ mkdir my-ketrics-app && cd my-ketrics-app
   "version": "1.0.0",
   "description": "My Ketrics application",
   "runtime": "nodejs18",
-  "actions": [
-    "listItems",
-    "getItem",
-    "createItem",
-    "updateItem",
-    "deleteItem"
-  ],
+  "actions": ["listItems", "getItem", "createItem", "updateItem", "deleteItem"],
   "entry": "dist/index.js",
   "include": ["dist/**/*"],
   "exclude": ["node_modules", "*.test.js"],
   "resources": {
-    "documentdb": [
-      { "code": "app-data", "description": "Main data store" }
-    ]
+    "documentdb": [{ "code": "app-data", "description": "Main data store" }]
   }
 }
 ```
 
 **Key rules:**
+
 - `actions` array MUST match the exported handler names in `backend/src/index.ts`
 - `resources` declares DocumentDB collections and Volumes the app needs
 - Add `"volume"` entries under resources when the app needs file storage
@@ -94,6 +91,7 @@ npm install -D @ketrics/sdk-backend@0.13.1 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
+
 ```json
 {
   "scripts": {
@@ -104,18 +102,26 @@ npm install -D @ketrics/sdk-backend@0.13.1 esbuild typescript @types/node
 
 ### 4. Write backend handlers
 
-See [BACKEND_REFERENCE.md](BACKEND_REFERENCE.md) for the complete SDK API and patterns.
+See [BACKEND_REFERENCE.md](BACKEND_REFERENCE.md) for the complete SDK API and patterns, and [Backend file organization](#backend-file-organization) below for how to split handlers across domain files. **Don't pile every handler into `index.ts`** — even a brand-new app should start with at least `types.ts`, `permissions.ts`, and one domain file.
 
-Every handler is an `async` function that receives a typed payload and returns a result object:
+Every handler is an `async` function that receives a typed payload and returns a result object. Place it in the relevant domain file and re-export from `src/index.ts`:
 
 ```typescript
-const myHandler = async (payload: { id: string }) => {
+// src/items.ts
+import { requireEditor } from "./permissions";
+import { ItemPayload } from "./types";
+
+export const createItem = async (payload: ItemPayload) => {
+  requireEditor();
   const userId = ketrics.requestor.userId;
   // ... handler logic using ketrics.* SDK
   return { result: "value" };
 };
+```
 
-export { myHandler };
+```typescript
+// src/index.ts — thin re-export
+export { createItem } from "./items";
 ```
 
 ### 5. Set up the frontend
@@ -139,6 +145,44 @@ See [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md) for ketrics.config.json details
 ketrics deploy --env .env
 ```
 
+## Backend file organization
+
+esbuild bundles the whole `src/` tree into a single `dist/index.js`, so multi-file source costs nothing at runtime — but it pays back enormously in readability, diff clarity, and ease of onboarding. **Default to this layout from day one.** A 2,000-line `index.ts` is painful to navigate, makes diffs noisy, and obscures domain boundaries; the platform's own apps (`libro-remuneraciones`, `comprobantes-softland`) are organized this way.
+
+### The splitting rule
+
+Group code by **domain / feature**, not by layer. One file per coherent area of the app:
+
+| File             | Responsibility                                                                                                                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`       | Re-exports only — must list every name in `ketrics.config.json` `actions`. No logic.                                                                                                      |
+| `types.ts`       | All shared interfaces and type aliases. No runtime code.                                                                                                                                  |
+| `permissions.ts` | `requireEditor` / `requireAdmin` / etc. + the `getPermissions` handler.                                                                                                                   |
+| `helpers.ts`     | Cross-cutting utilities used by **3+ domain files** (env reads, SQL escape, date/format helpers, the `health` handler).                                                                   |
+| `<domain>.ts`    | One file per domain area: handlers + the private helpers they need. Examples: `empresas.ts`, `accounts.ts`, `comprobantes.ts`, `contabilizacion.ts`, `comprobantes-tipo.ts`, `export.ts`. |
+
+### Where helpers live
+
+Co-locate helpers with the handlers that use them. Only promote a helper to `helpers.ts` once **three or more** domain files would import it. Anti-pattern: a `utils.ts` dumping ground that everything imports.
+
+- A function that reads an `ACCOUNTS#…` partition belongs in `accounts.ts`, not in a shared module — even if `comprobantes.ts` also calls it.
+- A function that reduces lines into a total belongs in the file that owns the parent entity (e.g. `recalculateTotals` lives in `comprobantes.ts`).
+- A function used only inside one handler stays at the top of that handler's file.
+
+### `index.ts` is a manifest
+
+`index.ts` does two jobs and only two: import handlers from domain files, and re-export them. Every name in `ketrics.config.json` `actions` must appear here, including background handlers prefixed with `_`. No types, no helpers, no logic — just imports and exports. This makes the action surface easy to read at a glance and keeps domain files free of platform plumbing.
+
+### When the split feels awkward
+
+- **Circular import risk:** if file A and file B both want to call into each other, the boundary is wrong. Pull the shared helper into a third file (or into `helpers.ts` if it's truly cross-cutting), or merge A and B if their responsibilities can't be cleanly separated.
+- **A domain file gets very large (>700 lines):** look for sub-domains. CRUD on a parent entity, line/detail operations on it, and approval transitions can usually share a file because they all touch the same partitions and helpers; but a heavyweight side concern (SQL/MSSQL posting, multi-step report generation) usually deserves its own file.
+- **Two handlers share most of their code:** extract a private helper inside the same file. Don't create a one-function shared module just to dedupe.
+
+### Refactoring an existing single-file backend
+
+If you inherit a monolithic `src/index.ts`, propose a domain-oriented split before adding new functionality. The refactor is structural only — preserve every handler signature, return shape, validation rule, and DocumentDB key. Verify with: `npm run build` (esbuild) succeeds; `npx tsc --noEmit` reports no _new_ errors vs. the original; and the bundle's exported handler names match the original set.
+
 ## SDK quick reference
 
 The `ketrics` global object is available in all backend handlers with no imports. Here's a quick overview of each subsystem:
@@ -154,10 +198,10 @@ Read app-specific configuration. Common pattern: store JSON arrays for connectio
 ### Requestor context
 
 ```typescript
-ketrics.requestor.userId              // Current user ID
-ketrics.requestor.name                // Display name
-ketrics.requestor.email               // Email
-ketrics.requestor.applicationPermissions  // ["editor", ...]
+ketrics.requestor.userId; // Current user ID
+ketrics.requestor.name; // Display name
+ketrics.requestor.email; // Email
+ketrics.requestor.applicationPermissions; // ["editor", ...]
 ```
 
 ### Database (SQL queries)
@@ -195,7 +239,7 @@ if (result.cursor) {
 ```typescript
 const excel = ketrics.Excel.create();
 const sheet = excel.addWorksheet("Sheet1");
-sheet.columns = columns.map(col => ({ header: col, key: col, width: 15 }));
+sheet.columns = columns.map((col) => ({ header: col, key: col, width: 15 }));
 sheet.addRows(rows);
 const buffer = await excel.toBuffer();
 ```
@@ -238,8 +282,8 @@ ketrics.console.error("Non-critical error message");
 ```typescript
 // Launch a long-running task in the background
 const jobId = await ketrics.Job.runInBackground({
-  function: "_syncMyTask",       // Handler name (must be in actions array)
-  payload: { entityId, data },   // Passed to the background handler
+  function: "_syncMyTask", // Handler name (must be in actions array)
+  payload: { entityId, data }, // Passed to the background handler
 });
 // The background handler runs asynchronously; store jobId for tracking
 ```
@@ -274,7 +318,7 @@ await ketrics.http.delete(`https://api.example.com/users/${userId}`, { headers }
 ### Application context
 
 ```typescript
-ketrics.application.id  // Application UUID
+ketrics.application.id; // Application UUID
 ```
 
 ## Common patterns
@@ -303,12 +347,12 @@ if (existing.createdBy !== userId) {
 
 Use prefixed composite keys for multi-entity storage in a single DocumentDB:
 
-| Entity | pk | sk |
-|--------|----|----|
-| User items | `USER#${userId}` | `ITEM#${itemId}` |
-| Tenant-wide | `TENANT_ITEMS` | `ITEM#${itemId}` |
-| Comments | `COMMENTS#${targetId}` | `COMMENT#${createdAt}#${commentId}` |
-| Index | `INDEX#${scope}` | `KEY#${lookupKey}` |
+| Entity      | pk                     | sk                                  |
+| ----------- | ---------------------- | ----------------------------------- |
+| User items  | `USER#${userId}`       | `ITEM#${itemId}`                    |
+| Tenant-wide | `TENANT_ITEMS`         | `ITEM#${itemId}`                    |
+| Comments    | `COMMENTS#${targetId}` | `COMMENT#${createdAt}#${commentId}` |
+| Index       | `INDEX#${scope}`       | `KEY#${lookupKey}`                  |
 
 ### Export to Excel via Volume
 
@@ -340,11 +384,7 @@ Store comments with composite keys for efficient queries. Use a separate index f
 
 ```typescript
 // Store comment
-await docdb.put(
-  `COMMENTS#${targetId}`,
-  `COMMENT#${createdAt}#${commentId}`,
-  commentData
-);
+await docdb.put(`COMMENTS#${targetId}`, `COMMENT#${createdAt}#${commentId}`, commentData);
 
 // Update count index
 const indexItem = await docdb.get(`INDEX#${scope}`, `KEY#${targetId}`);
@@ -364,7 +404,7 @@ type EntityState = "PENDIENTE" | "APROBADA" | "EN_PROCESO" | "CONTABILIZADA" | "
 // Validate transitions in each handler
 const approveEntity = async (payload: { id: string }) => {
   requireApprover();
-  const entity = await docdb.get(pk, sk) as unknown as MyEntity;
+  const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "PENDIENTE") {
     throw new Error("Solo se puede aprobar en estado PENDIENTE");
   }
@@ -401,8 +441,9 @@ const items = result.items.filter((item) => {
 ```
 - [ ] Create ketrics.config.json with correct actions and resources
 - [ ] Set up backend with @ketrics/sdk-backend and esbuild
-- [ ] Write handler functions using ketrics.* global
-- [ ] Export all handlers and sync with config actions array
+- [ ] Organize backend into domain-oriented files (types.ts, permissions.ts, helpers.ts, one file per domain) — not a single index.ts
+- [ ] index.ts contains only re-exports of every handler in the actions array
+- [ ] Write handler functions using ketrics.* global, co-located with related domain helpers
 - [ ] Background job handlers prefixed with _ and listed in actions array
 - [ ] State machine transitions validated in each handler
 - [ ] Set up frontend with React, Vite, and @ketrics/sdk-frontend

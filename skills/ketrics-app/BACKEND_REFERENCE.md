@@ -53,6 +53,7 @@ if (!volumeCode) throw new Error("EXPORTS_VOLUME not configured");
 ```
 
 Common environment variables:
+
 - `DB_CONNECTIONS` — JSON array of `{code, name}` for database connection dropdown
 - `DOCDB_*` — DocumentDB resource codes
 - `EXPORTS_VOLUME` — Volume code for file exports
@@ -62,10 +63,10 @@ Common environment variables:
 Context about the authenticated user making the request.
 
 ```typescript
-ketrics.requestor.userId              // string — User ID
-ketrics.requestor.name                // string — Display name
-ketrics.requestor.email               // string — Email address
-ketrics.requestor.applicationPermissions  // string[] — e.g., ["editor"]
+ketrics.requestor.userId; // string — User ID
+ketrics.requestor.name; // string — Display name
+ketrics.requestor.email; // string — Email address
+ketrics.requestor.applicationPermissions; // string[] — e.g., ["editor"]
 ```
 
 ### Permission checking pattern
@@ -92,23 +93,38 @@ function requireAdmin(): void {
 }
 
 // Usage: call at the start of handlers — different actions require different roles
-const createItem = async (payload: CreatePayload) => { requireEditor(); /* ... */ };
-const approveItem = async (payload: ApprovePayload) => { requireApprover(); /* ... */ };
-const revertItem = async (payload: RevertPayload) => { requireAdmin(); /* ... */ };
+const createItem = async (payload: CreatePayload) => {
+  requireEditor(); /* ... */
+};
+const approveItem = async (payload: ApprovePayload) => {
+  requireApprover(); /* ... */
+};
+const revertItem = async (payload: RevertPayload) => {
+  requireAdmin(); /* ... */
+};
 ```
 
 ## ketrics.Database
 
 Connect to SQL databases configured for the tenant. Supports parameterized queries.
 
-### Connect and query
+### Connect and query/execute
+
+The `db` object provides two methods for running SQL:
+
+- **`db.query(sql, params)`** — Use for **SELECT** statements. Returns `{ rows, rowCount }`.
+- **`db.execute(sql, params)`** — Use for **INSERT**, **UPDATE**, and **DELETE** statements.
 
 ```typescript
 const db = await ketrics.Database.connect(connectionCode);
 try {
+  // SELECT → use query()
   const result = await db.query<Record<string, unknown>>(sql, params);
   // result.rows: Record<string, unknown>[]
   // result.rowCount: number
+
+  // INSERT/UPDATE/DELETE → use execute()
+  await db.execute(insertSql, params);
 } finally {
   await db.close(); // ALWAYS close in finally block
 }
@@ -136,9 +152,16 @@ const limitedSql = `SELECT * FROM (${sql}) AS __limited_result LIMIT ${MAX_ROWS}
 const result = await db.query<Record<string, unknown>>(limitedSql, params);
 ```
 
-### Parameterized queries (positional)
+### Parameterized queries — Placeholder syntax by database type
 
-Use `$1`, `$2`, etc. for positional parameters:
+**IMPORTANT:** The placeholder syntax depends on the database engine:
+
+| Database               | Placeholder         | Example                           |
+| ---------------------- | ------------------- | --------------------------------- |
+| **PostgreSQL**         | `$1`, `$2`, `$3`... | `WHERE status = $1 AND role = $2` |
+| **MSSQL (SQL Server)** | `?`                 | `WHERE status = ? AND role = ?`   |
+
+For **PostgreSQL** connections:
 
 ```typescript
 const sql = "SELECT * FROM users WHERE status = $1 AND role = $2";
@@ -146,13 +169,43 @@ const params = ["active", "admin"];
 const result = await db.query<Record<string, unknown>>(sql, params);
 ```
 
-### Template parameter replacement
+For **MSSQL** connections (e.g., Softland):
 
-Convert `{{paramName}}` placeholders to positional parameters:
+```typescript
+const sql = "SELECT * FROM users WHERE status = ? AND role = ?";
+const params = ["active", "admin"];
+const result = await db.query<Record<string, unknown>>(sql, params);
+```
+
+When building dynamic IN clauses with MSSQL:
+
+```typescript
+const placeholders = cuentas.map(() => "?").join(", ");
+const sql = `SELECT * FROM tabla WHERE ano = ? AND codigo IN (${placeholders})`;
+const result = await db.query(sql, [ano, ...cuentas]);
+```
+
+### Table naming syntax by database type
+
+| Database               | Syntax          | Example                   |
+| ---------------------- | --------------- | ------------------------- |
+| **PostgreSQL**         | Double quotes   | `"schema"."table"`        |
+| **MSSQL (SQL Server)** | Square brackets | `[database].schema.table` |
+
+MSSQL example with dynamic company name:
+
+```typescript
+const sql = `SELECT * FROM [${empresa}].softland.cwmovim WHERE CpbAno = ?`;
+```
+
+### Template parameter replacement (PostgreSQL)
+
+Convert `{{paramName}}` placeholders to positional parameters. This pattern uses `$N` syntax and is for **PostgreSQL** connections. For MSSQL, replace `$${paramIndex}` with `"?"`:
 
 ```typescript
 // Input: "SELECT * FROM users WHERE status = {{status}}"
-// Output: "SELECT * FROM users WHERE status = $1"  with values = ["active"]
+// Output (PostgreSQL): "SELECT * FROM users WHERE status = $1"  with values = ["active"]
+// Output (MSSQL):      "SELECT * FROM users WHERE status = ?"   with values = ["active"]
 
 let parameterizedSql = rawSql;
 const values: unknown[] = [];
@@ -169,10 +222,7 @@ while ((match = regex.exec(parameterizedSql)) !== null) {
 // Replace each with positional $N
 for (const pName of paramNames) {
   paramIndex++;
-  parameterizedSql = parameterizedSql.replace(
-    new RegExp(`\\{\\{${pName}\\}\\}`, "g"),
-    () => `$${paramIndex}`
-  );
+  parameterizedSql = parameterizedSql.replace(new RegExp(`\\{\\{${pName}\\}\\}`, "g"), () => `$${paramIndex}`);
   values.push(paramValues[pName] ?? "");
 }
 ```
@@ -198,16 +248,14 @@ if (param.isIdentifier) {
 Support optional sections in SQL using `{{#if param}}...{{/if}}`:
 
 ```typescript
-parameterizedSql = parameterizedSql.replace(
-  /\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g,
-  (_, condParam: string, content: string) => {
-    const val = paramValues[condParam];
-    return (val != null && val.trim() !== "") ? content : "";
-  }
-);
+parameterizedSql = parameterizedSql.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (_, condParam: string, content: string) => {
+  const val = paramValues[condParam];
+  return val != null && val.trim() !== "" ? content : "";
+});
 ```
 
 Example SQL:
+
 ```sql
 SELECT * FROM orders
 WHERE status = {{status}}
@@ -251,9 +299,9 @@ if (!item) throw new Error("Not found");
 
 ```typescript
 const result = await docdb.list(`USER#${userId}`, {
-  skPrefix: "ITEM#",        // Filter by sort key prefix
-  scanForward: false,        // Reverse chronological order
-  limit: 100,                // Max items to return
+  skPrefix: "ITEM#", // Filter by sort key prefix
+  scanForward: false, // Reverse chronological order
+  limit: 100, // Max items to return
 });
 // result.items: Record<string, unknown>[]
 // result.cursor: string | undefined — present when more results exist
@@ -300,7 +348,7 @@ const fetchAll = async (pk: string, options: { skPrefix?: string; limit?: number
 ```typescript
 const result = await docdb.query("status#active", {
   limit: 100,
-  cursor: someCursor,  // from a previous query result
+  cursor: someCursor, // from a previous query result
 });
 // result.items, result.cursor
 ```
@@ -316,28 +364,32 @@ await docdb.delete(`USER#${userId}`, `ITEM#${itemId}`);
 Design composite keys with prefixes for multi-entity storage in a single DocumentDB:
 
 **User-scoped items (each user owns their items):**
+
 ```typescript
-pk = `USER#${userId}`
-sk = `ITEM#${itemId}`
+pk = `USER#${userId}`;
+sk = `ITEM#${itemId}`;
 ```
 
 **Tenant-wide items (shared across all users):**
+
 ```typescript
-pk = `TENANT_ITEMS`
-sk = `ITEM#${itemId}`
+pk = `TENANT_ITEMS`;
+sk = `ITEM#${itemId}`;
 ```
 
 **Comments on a target entity:**
+
 ```typescript
-pk = `COMMENTS#${connectionCode}#${targetKey}`
-sk = `COMMENT#${createdAt}#${commentId}`
+pk = `COMMENTS#${connectionCode}#${targetKey}`;
+sk = `COMMENT#${createdAt}#${commentId}`;
 // Using createdAt in sk gives chronological ordering
 ```
 
 **Count index for fast lookups:**
+
 ```typescript
-pk = `INDEX#${scope}`
-sk = `KEY#${lookupKey}`
+pk = `INDEX#${scope}`;
+sk = `KEY#${lookupKey}`;
 // Store: { lookupKey, count: N, lastUpdatedAt }
 ```
 
@@ -437,9 +489,7 @@ sheet.columns = [
 ];
 
 // Add rows (array of arrays, matching column order)
-sheet.addRows(
-  data.map(row => [row.name, row.email, row.status])
-);
+sheet.addRows(data.map((row) => [row.name, row.email, row.status]));
 
 // Get buffer for saving to Volume
 const buffer = await excel.toBuffer();
@@ -448,7 +498,7 @@ const buffer = await excel.toBuffer();
 ### Dynamic column widths
 
 ```typescript
-sheet.columns = columns.map(col => ({
+sheet.columns = columns.map((col) => ({
   header: col,
   key: col,
   width: Math.max(12, col.length + 4),
@@ -487,12 +537,12 @@ const exportData = async (payload: { data: Record<string, unknown>[] }) => {
   // Build Excel
   const excel = ketrics.Excel.create();
   const sheet = excel.addWorksheet("Export");
-  sheet.columns = columns.map(col => ({
+  sheet.columns = columns.map((col) => ({
     header: col,
     key: col,
     width: Math.max(12, col.length + 4),
   }));
-  sheet.addRows(data.map(row => columns.map(col => row[col] ?? "")));
+  sheet.addRows(data.map((row) => columns.map((col) => row[col] ?? "")));
   const buffer = await excel.toBuffer();
 
   // Save to Volume
@@ -517,7 +567,7 @@ await ketrics.Messages.sendBulk({
   type: "CUSTOM_EVENT_TYPE",
   subject: "Notification subject",
   body: "**Markdown** content is supported in the body.",
-  priority: "MEDIUM",  // "LOW" | "MEDIUM" | "HIGH"
+  priority: "MEDIUM", // "LOW" | "MEDIUM" | "HIGH"
 });
 ```
 
@@ -562,7 +612,7 @@ List users in the current tenant.
 const tenantUsers = await ketrics.Users.list();
 // Returns: { id: string, firstName: string, lastName: string, email: string }[]
 
-const users = tenantUsers.map(user => ({
+const users = tenantUsers.map((user) => ({
   userId: user.id,
   name: `${user.firstName} ${user.lastName}`.trim(),
   email: user.email,
@@ -572,7 +622,7 @@ const users = tenantUsers.map(user => ({
 ## ketrics.application
 
 ```typescript
-ketrics.application.id  // Application UUID, useful for namespacing Volume file keys
+ketrics.application.id; // Application UUID, useful for namespacing Volume file keys
 ```
 
 ## ketrics.console
@@ -591,8 +641,8 @@ Run long-running operations asynchronously in the background.
 
 ```typescript
 const jobId = await ketrics.Job.runInBackground({
-  function: "_syncMyBackgroundTask",  // Handler name — must be in actions array
-  payload: { entityId, data },         // Passed as the handler's payload argument
+  function: "_syncMyBackgroundTask", // Handler name — must be in actions array
+  payload: { entityId, data }, // Passed as the handler's payload argument
 });
 ```
 
@@ -650,6 +700,7 @@ const _syncMyBackgroundTask = async (payload: { entity: MyEntity; data: unknown 
 ### Launching a background job from a handler
 
 The calling handler should:
+
 1. Validate state (e.g., entity must be `APROBADA`)
 2. Transition to intermediate state (`EN_PROCESO`) **before** launching the job
 3. Launch `runInBackground`, store the returned `jobId` on the entity
@@ -658,7 +709,7 @@ The calling handler should:
 const processEntity = async (payload: { id: string }) => {
   requireEditor();
   const docdb = await ketrics.DocumentDb.connect(getDocDbCode());
-  const entity = await docdb.get(pk, sk) as unknown as MyEntity;
+  const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "APROBADA") throw new Error("Must be APROBADA");
 
   // Transition to intermediate state first
@@ -668,7 +719,12 @@ const processEntity = async (payload: { id: string }) => {
   // Launch background job
   const jobId = await ketrics.Job.runInBackground({
     function: "_syncMyBackgroundTask",
-    payload: { entity: updated, data: { /* ... */ } },
+    payload: {
+      entity: updated,
+      data: {
+        /* ... */
+      },
+    },
   });
 
   // Store jobId for tracking
@@ -691,10 +747,7 @@ import { ApplicationInvokeResult } from "@ketrics/sdk-backend";
 const appCode = ketrics.environment["OTHER_APP_CODE"];
 const app = await ketrics.Applications.connect(appCode);
 
-const result: ApplicationInvokeResult<ResponseType> = await app.invoke<PayloadType, ResponseType>(
-  "handlerName",
-  payload
-);
+const result: ApplicationInvokeResult<ResponseType> = await app.invoke<PayloadType, ResponseType>("handlerName", payload);
 
 if (result.success) {
   // result.result contains the typed response
@@ -753,16 +806,20 @@ const searchUsers = async (payload: { query: string; page?: number; apiKey: stri
 const createOrder = async (payload: { customerId: string; items: unknown[]; apiKey: string }) => {
   const { customerId, items, apiKey } = payload;
 
-  const response = await ketrics.http.post("https://api.example.com/orders", {
-    customerId,
-    items,
-    createdAt: new Date().toISOString(),
-  }, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const response = await ketrics.http.post(
+    "https://api.example.com/orders",
+    {
+      customerId,
+      items,
+      createdAt: new Date().toISOString(),
     },
-  });
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
 
   if (response.status === 201) {
     return { success: true, orderId: response.data.id };
@@ -778,12 +835,16 @@ const createOrder = async (payload: { customerId: string; items: unknown[]; apiK
 const updateUser = async (payload: { userId: string; name: string; email: string; apiKey: string }) => {
   const { userId, name, email, apiKey } = payload;
 
-  const response = await ketrics.http.put(`https://api.example.com/users/${userId}`, {
-    name,
-    email,
-  }, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  const response = await ketrics.http.put(
+    `https://api.example.com/users/${userId}`,
+    {
+      name,
+      email,
+    },
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    },
+  );
 
   return { success: response.status === 200, data: response.data };
 };
@@ -851,10 +912,10 @@ const syncCustomerData = async (payload: { externalApiUrl: string; apiKey: strin
 All methods return a response object with:
 
 ```typescript
-response.status     // number — HTTP status code (200, 201, 404, etc.)
-response.statusText // string — HTTP status text ("OK", "Created", etc.)
-response.data       // unknown — Parsed response body (JSON by default)
-response.headers    // Record<string, string> — Response headers
+response.status; // number — HTTP status code (200, 201, 404, etc.)
+response.statusText; // string — HTTP status text ("OK", "Created", etc.)
+response.data; // unknown — Parsed response body (JSON by default)
+response.headers; // Record<string, string> — Response headers
 ```
 
 ### Options
@@ -944,7 +1005,7 @@ interface MyEntity {
 ```typescript
 const approveEntity = async (payload: { id: string }) => {
   requireApprover();
-  const entity = await docdb.get(pk, sk) as unknown as MyEntity;
+  const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "PENDIENTE") {
     throw new Error("Can only approve entities in PENDIENTE state");
   }
@@ -957,7 +1018,7 @@ const approveEntity = async (payload: { id: string }) => {
 
 const revertEntity = async (payload: { id: string }) => {
   requireAdmin();
-  const entity = await docdb.get(pk, sk) as unknown as MyEntity;
+  const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "CONTABILIZADA" && entity.estado !== "ERROR") {
     throw new Error("Can only revert CONTABILIZADA or ERROR entities");
   }
@@ -975,11 +1036,19 @@ const VALID_IDENTIFIER = /^[a-zA-Z0-9_]+$/;
 if (!VALID_IDENTIFIER.test(empresa)) {
   throw new Error("Invalid table name identifier");
 }
-const tableName = `"prod"."${empresa}_softland_saldos_docs"`;
-const sql = `SELECT * FROM ${tableName} WHERE saldo > 0`;
 ```
 
-Never interpolate user input into SQL without validation. Use parameterized queries (`$1`, `$2`) for values, and regex validation for identifiers.
+Use the appropriate quoting syntax for the database type:
+
+```typescript
+// PostgreSQL — double quotes
+const tableName = `"prod"."${empresa}_softland_saldos_docs"`;
+
+// MSSQL (SQL Server) — square brackets
+const tableName = `[${empresa}].softland.cwmovim`;
+```
+
+Never interpolate user input into SQL without validation. Use parameterized queries (`$1`/`$2` for PostgreSQL, `?` for MSSQL) for values, and regex validation for identifiers.
 
 ## Comment system pattern
 
