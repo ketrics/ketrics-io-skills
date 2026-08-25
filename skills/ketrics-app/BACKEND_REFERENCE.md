@@ -4,7 +4,7 @@ Complete reference for the `ketrics` global object and backend handler patterns.
 
 ## Handler function pattern
 
-Every handler is an async function that takes a typed payload and returns a result. Handlers are exported by name and must match the `actions` array in `ketrics.config.json`.
+Every handler is an async function that takes a typed payload and returns a result. Handlers are exported by name from `backend/src/index.ts` and listed in the `functions` array in `ketrics.config.json`. (The `actions` array is something different — it holds the app's role-style permission slots, not handler names. See `CONFIG_AND_DEPLOY.md`.)
 
 ```typescript
 interface MyPayload {
@@ -34,7 +34,7 @@ export { myHandler };
 
 ## ketrics.environment
 
-Read application environment variables configured in the Ketrics dashboard.
+Read application environment variables. Declare each one in `ketrics.config.json` under `environmentVariables` — on deploy, any declared variable that does not yet exist is created with an empty value for an admin to fill in the Ketrics dashboard.
 
 ```typescript
 // Simple string value
@@ -43,20 +43,44 @@ const apiKey = ketrics.environment["API_KEY"];
 // JSON-encoded config
 const raw = ketrics.environment["DB_CONNECTIONS"];
 const connections: { code: string; name: string }[] = JSON.parse(raw);
+```
 
-// With fallback
-const docDbCode = ketrics.environment["DOCDB_CODE"] || "default-store";
+### Never hardcode resource codes
 
-// Volume reference
-const volumeCode = ketrics.environment["EXPORTS_VOLUME"];
-if (!volumeCode) throw new Error("EXPORTS_VOLUME not configured");
+DocumentDB resource codes, Volume codes, and Database connection codes differ per tenant and per environment. They must **never** appear as string literals in handler code — read them from `ketrics.environment`, and **never fall back to a hardcoded default**.
+
+```typescript
+// ❌ never — hardcoded code, and a literal fallback is just as bad
+const docdb = await ketrics.DocumentDb.connect("app-data");
+const code = ketrics.environment["APP_DATA_DOCDB"] || "default-store";
+
+// ✅ always — read the code from the environment, fail loudly if missing
+const docdb = await ketrics.DocumentDb.connect(ketrics.environment["APP_DATA_DOCDB"]);
+```
+
+Define a small accessor in `helpers.ts` for each resource so the env-var name lives in exactly one place and a missing value fails with a clear message:
+
+```typescript
+// helpers.ts
+function requireEnv(name: string): string {
+  const value = ketrics.environment[name];
+  if (!value) throw new Error(`Environment variable ${name} is not configured`);
+  return value;
+}
+
+// One accessor per resource — the name matches the resource `code` in ketrics.config.json
+export const getDocDbCode = (): string => requireEnv("APP_DATA_DOCDB");
+export const getExportsVolumeCode = (): string => requireEnv("EXPORTS_VOLUME");
+export const getMainDbConnectionCode = (): string => requireEnv("MAIN_DB_CONNECTION");
 ```
 
 Common environment variables:
 
-- `DB_CONNECTIONS` — JSON array of `{code, name}` for database connection dropdown
-- `DOCDB_*` — DocumentDB resource codes
-- `EXPORTS_VOLUME` — Volume code for file exports
+- `*_DOCDB` — DocumentDB resource code (one env var per DocumentDB resource)
+- `*_VOLUME` — Volume resource code (one env var per Volume)
+- `*_DB_CONNECTION` — SQL database connection code
+- `DB_CONNECTIONS` — JSON array of `{code, name}` when the app offers a connection dropdown
+- `*_APP_CODE` — application code for cross-app invocation
 
 ## ketrics.requestor
 
@@ -92,7 +116,7 @@ function requireAdmin(): void {
   }
 }
 
-// Usage: call at the start of handlers — different actions require different roles
+// Usage: call at the start of handlers — different handlers require different roles
 const createItem = async (payload: CreatePayload) => {
   requireEditor(); /* ... */
 };
@@ -116,7 +140,8 @@ The `db` object provides two methods for running SQL:
 - **`db.execute(sql, params)`** — Use for **INSERT**, **UPDATE**, and **DELETE** statements.
 
 ```typescript
-const db = await ketrics.Database.connect(connectionCode);
+// Connection code comes from an environment variable — never a literal
+const db = await ketrics.Database.connect(getMainDbConnectionCode());
 try {
   // SELECT → use query()
   const result = await db.query<Record<string, unknown>>(sql, params);
@@ -270,9 +295,12 @@ NoSQL document store with DynamoDB-style partition key (pk) and sort key (sk).
 ### Connect
 
 ```typescript
-const docdb = await ketrics.DocumentDb.connect(resourceCode);
-// resourceCode matches the "code" in ketrics.config.json resources.documentdb
+// The resource code is read from an environment variable, never hardcoded.
+// getDocDbCode() is the helpers.ts accessor defined in the ketrics.environment section.
+const docdb = await ketrics.DocumentDb.connect(getDocDbCode());
 ```
+
+The env-var name (`APP_DATA_DOCDB` in the example helper) must match the `code` of an entry under `resources.documentdb` in `ketrics.config.json`, and that variable must be declared in `environmentVariables`.
 
 ### Put (create or overwrite)
 
@@ -312,7 +340,7 @@ const result = await docdb.list(`USER#${userId}`, {
 When a `list()` call returns more items than the `limit`, the response includes a `cursor` string. Pass it back to fetch the next page:
 
 ```typescript
-const docdb = await ketrics.DocumentDb.connect(resourceCode);
+const docdb = await ketrics.DocumentDb.connect(getDocDbCode());
 
 // First page
 const page1 = await docdb.list("users", { limit: 50 });
@@ -510,15 +538,34 @@ sheet.columns = columns.map((col) => ({
 File storage with presigned download URLs.
 
 ```typescript
-const volume = await ketrics.Volume.connect(volumeCode);
+// Volume code comes from an environment variable — never a literal.
+// getExportsVolumeCode() is the helpers.ts accessor from the ketrics.environment section.
+const volume = await ketrics.Volume.connect(getExportsVolumeCode());
 
 // Upload a file
 const fileKey = `${ketrics.application.id}/${filename}`;
 await volume.put(fileKey, buffer);
 
-// Generate download URL
-const presigned = await volume.generateDownloadUrl(fileKey);
-// presigned.url — time-limited download URL
+// Generate download URL — ALWAYS pass responseContentDisposition for browser downloads
+const presigned = await volume.generateDownloadUrl(fileKey, {
+  responseContentDisposition: attachmentDisposition(filename),
+});
+// presigned.url — time-limited download URL with Content-Disposition: attachment
+```
+
+### Why `responseContentDisposition` is required
+
+The app frontend runs in an iframe under a strict `frame-src https://cdn.ketrics.io` CSP. Presigned Volume URLs point at the S3 bucket host, which is *not* in that allowlist. When the browser follows the URL without `Content-Disposition: attachment` set, it tries to render the file by navigating the iframe to S3 — CSP blocks the navigation and the download silently fails (the user sees an error like `Framing 'https://ketrics-volumes-...amazonaws.com/' violates the following Content Security Policy directive: "frame-src https://cdn.ketrics.io"`). Forcing `Content-Disposition: attachment` short-circuits the rendering path — the browser starts a download instead of navigating, so the CSP never applies. This applies to every Volume URL the frontend hits, not just "export" buttons (PDF preview, comprobante download, etc. all need it).
+
+### `attachmentDisposition` helper
+
+Filenames often contain accents, spaces, or other non-ASCII characters. Use RFC 5987 encoding so both legacy and modern browsers get a usable filename:
+
+```typescript
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
 ```
 
 ### Complete export pattern (Excel + Volume)
@@ -550,7 +597,9 @@ const exportData = async (payload: { data: Record<string, unknown>[] }) => {
   const fileKey = `${ketrics.application.id}/${filename}`;
   const volume = await ketrics.Volume.connect(volumeCode);
   await volume.put(fileKey, buffer);
-  const { url } = await volume.generateDownloadUrl(fileKey);
+  const { url } = await volume.generateDownloadUrl(fileKey, {
+    responseContentDisposition: attachmentDisposition(filename),
+  });
 
   return { url, filename };
 };
@@ -631,7 +680,98 @@ ketrics.application.id; // Application UUID, useful for namespacing Volume file 
 ketrics.console.error("Error message for logs");
 ```
 
-Use for non-critical errors where you don't want to throw and fail the handler.
+The SDK exposes `log`, `error`, `warn`, `info`, and `debug` — each forwards to CloudWatch tagged with the matching severity, so you can filter by level there. Use it for non-critical errors where you don't want to throw and fail the handler. But don't sprinkle raw `ketrics.console.*` calls through a real app — wrap them in the leveled logger below.
+
+## Logging: DEBUG_LEVEL-gated logger
+
+### Why this exists
+
+Once an app is deployed, CloudWatch is your only window into what it's doing — and the things that break in production (a sync that silently stores nothing, an external API quietly returning 401, a filter dropping every row) are exactly the things you can't reproduce locally. You want rich, stage-by-stage logging available on demand, but you don't want that verbosity (or its cost and noise) running all the time, and you don't want to redeploy code just to turn diagnostics on.
+
+The fix is a tiny logger gated by a `DEBUG_LEVEL` environment variable. An administrator sets `DEBUG_LEVEL=debug` in the dashboard to capture a full trace of a misbehaving flow, reads the CloudWatch lines, then sets it back to `error` — all without a code change. This pattern was the difference between "no new videos appear, no idea why" and pinpointing a revoked OAuth token in one sync cycle: the silent failure became a labeled `[syncChannels] failed … invalid_grant` line.
+
+### The logger
+
+Create `src/logger.ts` verbatim — it reads `DEBUG_LEVEL` **once at module load** (env vars are static per deployment, so re-reading per call is wasted work):
+
+```typescript
+// src/logger.ts
+type LevelName = "none" | "error" | "warn" | "info" | "debug";
+
+const LEVELS: Record<LevelName, number> = { none: 0, error: 1, warn: 2, info: 3, debug: 4 };
+
+const resolveLevel = (): number => {
+  const raw = (ketrics.environment["DEBUG_LEVEL"] ?? "").toString().trim().toLowerCase();
+  if (raw in LEVELS) return LEVELS[raw as LevelName];
+  return LEVELS.error; // unset / unrecognized → errors only (preserves default behavior)
+};
+
+const active = resolveLevel();
+
+const fmt = (scope: string, msg: string) => `[${scope}] ${msg}`;
+
+export const log = {
+  error: (scope: string, msg: string, data?: unknown) =>
+    active >= LEVELS.error && ketrics.console.error(fmt(scope, msg), data ?? ""),
+  warn: (scope: string, msg: string, data?: unknown) =>
+    active >= LEVELS.warn && ketrics.console.warn(fmt(scope, msg), data ?? ""),
+  info: (scope: string, msg: string, data?: unknown) =>
+    active >= LEVELS.info && ketrics.console.info(fmt(scope, msg), data ?? ""),
+  debug: (scope: string, msg: string, data?: unknown) =>
+    active >= LEVELS.debug && ketrics.console.debug(fmt(scope, msg), data ?? ""),
+};
+```
+
+Levels are ordered `none < error < warn < info < debug`, and each level **includes the ones above it** — `info` emits error + warn + info, `debug` emits everything, `none` silences all of it. Unset defaults to `error`, which matches the behavior of an app that only ever called `ketrics.console.error`, so adopting the logger never quietly drops your existing error logs.
+
+Declare the variable in `ketrics.config.json`:
+
+```json
+{ "name": "DEBUG_LEVEL", "description": "Backend log verbosity: none | error | warn | info | debug (each level includes the levels above it). Unset defaults to error." }
+```
+
+### How to use it
+
+The first argument is a **scope** — usually the function or subsystem name. It prefixes every line as `[scope]` so the logs are greppable in CloudWatch (`filter [syncChannels]`). Pick the level by audience:
+
+| Level   | Use for                                                                                          |
+| ------- | ------------------------------------------------------------------------------------------------ |
+| `error` | A real failure: a thrown exception you caught, an external call that won't recover.              |
+| `warn`  | Something suspicious but survivable: an empty result where you expected rows, a fallback taken.  |
+| `info`  | One line per significant operation — start/end of a sync, counts in and counts out.              |
+| `debug` | Per-item detail: each record written, request params, raw vs. filtered counts, the exact key.    |
+
+```typescript
+import { log } from "./logger";
+
+const syncChannels = async (userId: string, channelIds: string[]) => {
+  log.info("syncChannels", `syncing ${channelIds.length} channel(s)`);
+  for (const channelId of channelIds) {
+    try {
+      const videos = await fetchChannelRecentVideos(userId, channelId);
+      log.debug("syncChannels", `${channelId}: fetched ${videos.length}`);
+    } catch (err) {
+      log.error("syncChannels", `failed for ${channelId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  log.info("syncChannels", `done: total=${total} errors=${errors.length}`);
+};
+```
+
+### Where to put log statements
+
+Log at the **boundaries where data can silently disappear** — that's where a count that drops to zero tells you exactly which stage failed:
+
+- **Entry/exit of each sync or batch job**: count in, count out (`info`). When the input count is non-zero but the output is zero, you know the loss is inside.
+- **Around every external call** (`ketrics.http`, cross-app `invoke`, token refresh): the request params (`debug`) and the response status (`debug`/`warn`). Remember `ketrics.http` does **not** throw on non-2xx — it returns the response with the error status — so a quiet 401/403 looks identical to an empty result unless you log `response.status`.
+- **Read/filter paths**: raw count fetched vs. count after each filter (`info`). This distinguishes "the data was never stored" from "the data is stored but a filter hides it."
+- **Each write**: the storage key being written (`debug`). Upserts that collide on a key overwrite instead of adding, which looks like "nothing new appeared."
+
+### Guardrails
+
+- **Never log secrets, tokens, refresh tokens, the client secret, or PII.** Log counts, IDs, storage keys, statuses, and timestamps — the shape of the data, not the data itself. When logging an HTTP error body, you're logging the provider's error JSON, not credentials; still scan it before adding the line.
+- Keep message construction cheap. Heavy object dumps belong only at `debug`, behind the level gate.
+- One scope per file/subsystem keeps CloudWatch filtering clean — reuse the same scope string for all lines in a given function.
 
 ## ketrics.Job
 
@@ -641,14 +781,14 @@ Run long-running operations asynchronously in the background.
 
 ```typescript
 const jobId = await ketrics.Job.runInBackground({
-  function: "_syncMyBackgroundTask", // Handler name — must be in actions array
+  function: "_syncMyBackgroundTask", // Handler name — must be exported and listed in functions
   payload: { entityId, data }, // Passed as the handler's payload argument
 });
 ```
 
 ### Background handler naming convention
 
-Prefix background handler names with `_` (e.g., `_syncCreateRecord`). These handlers are invoked by the platform, not the frontend. They **must** be listed in `ketrics.config.json` `actions` and exported from `backend/src/index.ts`.
+Prefix background handler names with `_` (e.g., `_syncCreateRecord`). These handlers are invoked by the platform, not the frontend. They **must** be exported from `backend/src/index.ts` and listed in `ketrics.config.json` `functions`.
 
 ### Double try-catch error handling
 
