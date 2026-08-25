@@ -400,12 +400,23 @@ const handleExport = async () => {
     const a = document.createElement("a");
     a.href = result.url;
     a.download = result.filename;
+    a.target = "_blank";
+    a.rel = "noopener";
     a.click();
   } catch (err) {
     setError(err instanceof Error ? err.message : "Export failed");
   }
 };
 ```
+
+**`target="_blank"` is required, and the backend must set `Content-Disposition: attachment` on the presigned URL.** Two CSP-related gotchas combine here:
+
+1. The frontend runs inside an iframe with `frame-src https://cdn.ketrics.io`. A bare `a.click()` (no target) navigates the current frame — but the URL points at S3, which isn't on the CSP allowlist, so the navigation is blocked. `target="_blank"` makes the click open a new top-level browsing context that isn't bound by the iframe's CSP.
+2. The `download` attribute is **ignored for cross-origin URLs**. Setting `a.download = filename` does nothing for S3 URLs — the browser only honors it for same-origin links. The only way to force a save is to have the *response* carry `Content-Disposition: attachment`, which the backend sets via `responseContentDisposition` on `generateDownloadUrl`. With that header in place, the new tab triggered by `target="_blank"` turns into a download instead of actually opening a tab — the user just sees their file save.
+
+Never use `window.open(url, "_blank")` for Volume files — pop-up blockers can rewrite it to in-frame navigation, which then trips the CSP. The anchor pattern above is more reliable.
+
+If you ever see `Framing 'https://ketrics-volumes-...amazonaws.com/' violates the following Content Security Policy directive: "frame-src https://cdn.ketrics.io"` in the browser console, one of the two pieces is missing.
 
 ### Permission-based UI (multiple roles)
 
