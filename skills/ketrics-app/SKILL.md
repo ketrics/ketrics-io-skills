@@ -14,13 +14,13 @@ A Ketrics app has two parts:
 1. **Backend** (`backend/src/`): TypeScript handler functions organized across **domain-oriented files**, with `index.ts` acting as a thin re-export entry point. Uses the global `ketrics` object (typed by `@ketrics/sdk-backend`) with no imports needed. esbuild bundles the whole tree into a single `dist/index.js`. See [Backend file organization](#backend-file-organization) for the splitting pattern — apply it from day one rather than waiting for the file to grow.
 2. **Frontend** (`frontend/src/`): React app (Vite + TypeScript) embedded as an iframe. Uses `@ketrics/sdk-frontend` for auth. Calls backend handlers via a service layer.
 
-A `ketrics.config.json` at the project root declares the app name, runtime, action names, entry point, and resources.
+A `ketrics.config.json` at the project root declares the app name, runtime, entry point, the capabilities the app enforces (`actions`), the roles that grant them (`roles`), its handler names (`functions`), environment variables, and resources.
 
 ## Project structure
 
 ```
 my-ketrics-app/
-├── ketrics.config.json          # App config (actions, resources)
+├── ketrics.config.json          # App config (actions, roles, functions, environment, resources)
 ├── CLAUDE.md                    # Dev instructions
 ├── backend/
 │   ├── package.json             # devDeps: @ketrics/sdk-backend, esbuild, typescript
@@ -28,7 +28,7 @@ my-ketrics-app/
 │   └── src/
 │       ├── index.ts             # Thin re-exports — bundle entry point
 │       ├── types.ts             # Shared interfaces, no runtime code
-│       ├── permissions.ts       # RBAC helpers + getPermissions handler
+│       ├── permissions.ts       # PERMISSIONS + typed requirePermission + getPermissions handler
 │       ├── helpers.ts           # Cross-cutting utilities (env, dates, SQL escape)
 │       └── <domain>.ts          # One file per domain (e.g., empresas.ts, libro.ts)
 ├── frontend/
@@ -59,13 +59,33 @@ mkdir my-ketrics-app && cd my-ketrics-app
 
 ### 2. Create `ketrics.config.json`
 
+**Decide before you write it.** Start from the capabilities the app enforces, then compose roles
+from them. [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md) has the full decision guide; the short
+version:
+
+1. **`actions` = capabilities** — a handful of verbs the app enforces (`read`, `write`, `export`,
+   `approve`), each guarded by at least one handler. Not handler names. Not role names.
+2. **`roles` = jobs** — name them after what someone does, and compose capabilities into them.
+3. **New capability only when a guard needs it.** If only the audience changes, add a role.
+4. **`resources` vs `environment`** — a `documentdb`/`volume`/`secret` code is a `resources` entry;
+   everything else, including SQL data connection codes, is a plain `environment` entry.
+
 ```json
 {
   "name": "my-ketrics-app",
   "version": "1.0.0",
   "description": "My Ketrics application",
   "runtime": "nodejs18",
-  "actions": ["listItems", "getItem", "createItem", "updateItem", "deleteItem"],
+  "actions": [
+    { "code": "read", "description": "View items" },
+    { "code": "write", "description": "Create and modify items" },
+    { "code": "export", "description": "Generate Excel exports" }
+  ],
+  "functions": ["getPermissions", "listItems", "getItem", "createItem", "updateItem", "deleteItem"],
+  "roles": [
+    { "code": "viewer", "name": "Viewer", "actions": ["read"] },
+    { "code": "editor", "name": "Editor", "actions": ["read", "write", "export"] }
+  ],
   "entry": "dist/index.js",
   "include": ["dist/**/*"],
   "exclude": ["node_modules", "*.test.js"],
@@ -77,9 +97,18 @@ mkdir my-ketrics-app && cd my-ketrics-app
 
 **Key rules:**
 
-- `actions` array MUST match the exported handler names in `backend/src/index.ts`
-- `resources` declares DocumentDB collections and Volumes the app needs
-- Add `"volume"` entries under resources when the app needs file storage
+- `actions` are the **capabilities** the app enforces — the codes `requirePermission` checks and
+  roles grant. **Not** handler names: those go in `functions`. Each entry is a bare string or
+  `{ code, description }`; prefer the object form so the portal can explain the capability
+- The same codes must appear in `PERMISSIONS` in `backend/src/permissions.ts`. The two lists are
+  hand-synced and nothing verifies them — edit both in the same commit
+- `functions` lists every exported handler name, including background handlers prefixed with `_`
+- `roles` declares the roles to create; every action a role lists must be declared in `actions`.
+  Without `roles`, no per-user application roles are created at all
+- `resources` declares DocumentDB collections, Volumes and Secrets the app needs. Each binds to an
+  environment variable — named explicitly, or derived (`app-data` → `APP_DATA_DOCDB`)
+- `environment` declares every other variable the app reads. The legacy key `environmentVariables`
+  now **fails the deploy**
 
 ### 3. Set up the backend
 
@@ -108,11 +137,11 @@ Every handler is an `async` function that receives a typed payload and returns a
 
 ```typescript
 // src/items.ts
-import { requireEditor } from "./permissions";
+import { requirePermission } from "./permissions";
 import { ItemPayload } from "./types";
 
 export const createItem = async (payload: ItemPayload) => {
-  requireEditor();
+  requirePermission("write");
   const userId = ketrics.requestor.userId;
   // ... handler logic using ketrics.* SDK
   return { result: "value" };
@@ -141,9 +170,18 @@ See [FRONTEND_REFERENCE.md](FRONTEND_REFERENCE.md) for the service layer, auth, 
 See [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md) for ketrics.config.json details and GitHub Actions CI/CD.
 
 ```bash
+# Install the CLI — ALWAYS with an explicit tag, on Node >= 24
+npm install -g @ketrics/ketrics-cli@latest
+ketrics --version    # if this prints 0.1.0, upgrade Node and reinstall
+
 # Manual deploy (requires .env with KETRICS_TOKEN)
 ketrics deploy --env .env
 ```
+
+**Never install the CLI unpinned.** `npm install -g @ketrics/ketrics-cli` on Node older than 24
+silently resolves back to `0.1.0`, which ships a ZIP with no `ketrics.config.json` in it and still
+**reports success** — the app keeps its old actions, roles and variables while CI stays green. In
+CI, pin `@^0.11`, set `node-version: 24`, and add `.npmrc` with `engine-strict=true`.
 
 ## Backend file organization
 
@@ -155,9 +193,9 @@ Group code by **domain / feature**, not by layer. One file per coherent area of 
 
 | File             | Responsibility                                                                                                                                                                            |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`       | Re-exports only — must list every name in `ketrics.config.json` `actions`. No logic.                                                                                                      |
+| `index.ts`       | Re-exports only — must list every name in `ketrics.config.json` `functions`. No logic.                                                                                                    |
 | `types.ts`       | All shared interfaces and type aliases. No runtime code.                                                                                                                                  |
-| `permissions.ts` | `requireEditor` / `requireAdmin` / etc. + the `getPermissions` handler.                                                                                                                   |
+| `permissions.ts` | The `PERMISSIONS` tuple, the `Permission` type, the typed `requirePermission` guard, and the `getPermissions` handler.                                                                    |
 | `helpers.ts`     | Cross-cutting utilities used by **3+ domain files** (env reads, SQL escape, date/format helpers, the `health` handler).                                                                   |
 | `<domain>.ts`    | One file per domain area: handlers + the private helpers they need. Examples: `empresas.ts`, `accounts.ts`, `comprobantes.ts`, `contabilizacion.ts`, `comprobantes-tipo.ts`, `export.ts`. |
 
@@ -171,7 +209,7 @@ Co-locate helpers with the handlers that use them. Only promote a helper to `hel
 
 ### `index.ts` is a manifest
 
-`index.ts` does two jobs and only two: import handlers from domain files, and re-export them. Every name in `ketrics.config.json` `actions` must appear here, including background handlers prefixed with `_`. No types, no helpers, no logic — just imports and exports. This makes the action surface easy to read at a glance and keeps domain files free of platform plumbing.
+`index.ts` does two jobs and only two: import handlers from domain files, and re-export them. Every name in `ketrics.config.json` `functions` must appear here, including background handlers prefixed with `_`. No types, no helpers, no logic — just imports and exports. This makes the callable surface easy to read at a glance and keeps domain files free of platform plumbing.
 
 ### When the split feels awkward
 
@@ -201,7 +239,7 @@ Read app-specific configuration. Common pattern: store JSON arrays for connectio
 ketrics.requestor.userId; // Current user ID
 ketrics.requestor.name; // Display name
 ketrics.requestor.email; // Email
-ketrics.requestor.applicationPermissions; // ["editor", ...]
+ketrics.requestor.applicationPermissions; // granted capabilities, e.g. ["read", "write"] (or ["*"])
 ```
 
 ### Database (SQL queries)
@@ -282,7 +320,7 @@ ketrics.console.error("Non-critical error message");
 ```typescript
 // Launch a long-running task in the background
 const jobId = await ketrics.Job.runInBackground({
-  function: "_syncMyTask", // Handler name (must be in actions array)
+  function: "_syncMyTask", // Handler name (list it in the functions array)
   payload: { entityId, data }, // Passed to the background handler
 });
 // The background handler runs asynchronously; store jobId for tracking
@@ -326,12 +364,22 @@ ketrics.application.id; // Application UUID
 ### Permission checking
 
 ```typescript
-function requireEditor(): void {
-  if (!ketrics.requestor.applicationPermissions.includes("editor")) {
-    throw new Error("Permission denied: editor role required");
+// permissions.ts — the capabilities this app enforces, mirroring `actions` in ketrics.config.json
+export const PERMISSIONS = ["read", "write", "export", "approve"] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+export function requirePermission(permission: Permission): void {
+  const granted = ketrics.requestor.applicationPermissions;
+  if (!granted.includes("*") && !granted.includes(permission)) {
+    throw new Error(`Permission denied: "${permission}" required`);
   }
 }
 ```
+
+Typing the parameter is the point: `requirePermission("wirte")` is a compile error, where an
+untyped `string` guard would ship a handler no role can ever reach. Never test a **role code**
+against `applicationPermissions` — it holds capabilities, so `includes("editor")` can never match.
 
 ### Ownership verification
 
@@ -403,7 +451,7 @@ type EntityState = "PENDIENTE" | "APROBADA" | "EN_PROCESO" | "CONTABILIZADA" | "
 
 // Validate transitions in each handler
 const approveEntity = async (payload: { id: string }) => {
-  requireApprover();
+  requirePermission("approve");
   const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "PENDIENTE") {
     throw new Error("Solo se puede aprobar en estado PENDIENTE");
@@ -439,17 +487,23 @@ const items = result.items.filter((item) => {
 ## Checklist for new apps
 
 ```
-- [ ] Create ketrics.config.json with correct actions and resources
+- [ ] Create ketrics.config.json: actions = capabilities (not handler names, not role names), each
+      with a description; roles named after jobs, composed from those capabilities
 - [ ] Set up backend with @ketrics/sdk-backend and esbuild
 - [ ] Organize backend into domain-oriented files (types.ts, permissions.ts, helpers.ts, one file per domain) — not a single index.ts
-- [ ] index.ts contains only re-exports of every handler in the actions array
-- [ ] Write handler functions using ketrics.* global, co-located with related domain helpers
-- [ ] Background job handlers prefixed with _ and listed in actions array
+- [ ] permissions.ts declares PERMISSIONS matching the config's actions EXACTLY (hand-synced,
+      nothing verifies it) plus the typed requirePermission guard
+- [ ] index.ts contains only re-exports of every handler in the functions array
+- [ ] Write handler functions using ketrics.* global, co-located with related domain helpers, each
+      guarded with requirePermission(...)
+- [ ] Background job handlers prefixed with _ and listed in the functions array
 - [ ] State machine transitions validated in each handler
 - [ ] Set up frontend with React, Vite, and @ketrics/sdk-frontend
 - [ ] Create APIClient service layer with dev/prod branching
 - [ ] Write mock handlers for local development
 - [ ] Define TypeScript interfaces in types.ts
-- [ ] Set up GitHub Actions deploy workflow
+- [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.11), node-version 24, .npmrc with
+      engine-strict=true
 - [ ] Configure environment variables in Ketrics dashboard
+- [ ] After the first deploy, confirm the app's actions/roles/variables actually changed
 ```

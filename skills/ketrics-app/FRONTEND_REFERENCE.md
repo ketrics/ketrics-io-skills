@@ -183,7 +183,9 @@ const handlers: Record<string, MockHandler> = {
   },
 
   getPermissions: () => ({
-    isEditor: true,
+    canWrite: true,
+    canApprove: true,
+    canExport: true,
     userId: "mock-user",
     userName: "Mock User",
   }),
@@ -418,19 +420,23 @@ Never use `window.open(url, "_blank")` for Volume files — pop-up blockers can 
 
 If you ever see `Framing 'https://ketrics-volumes-...amazonaws.com/' violates the following Content Security Policy directive: "frame-src https://cdn.ketrics.io"` in the browser console, one of the two pieces is missing.
 
-### Permission-based UI (multiple roles)
+### Permission-based UI (multiple capabilities)
+
+The `getPermissions` handler reports what the current user **can do**, not which roles they hold.
+Mirror the backend's capabilities (`actions` in `ketrics.config.json`) as `can*` booleans — a user
+may hold several roles, and the UI only ever cares about the union of their capabilities.
 
 ```typescript
 interface Permissions {
-  isEditor: boolean;
-  isApprover: boolean;
-  isAdmin: boolean;
+  canWrite: boolean;
+  canApprove: boolean;
+  canExport: boolean;
   userId: string;
   userName: string;
 }
 
 const [permissions, setPermissions] = useState<Permissions>({
-  isEditor: false, isApprover: false, isAdmin: false, userId: "", userName: "",
+  canWrite: false, canApprove: false, canExport: false, userId: "", userName: "",
 });
 
 useEffect(() => {
@@ -439,11 +445,32 @@ useEffect(() => {
     .catch(() => {});
 }, []);
 
-// In JSX — different roles control different actions
-{permissions.isEditor && <button onClick={handleCreate}>Create</button>}
-{permissions.isApprover && <button onClick={handleApprove}>Approve</button>}
-{permissions.isAdmin && <button onClick={handleRevert}>Revert</button>}
+// In JSX — different capabilities control different actions
+{permissions.canWrite && <button onClick={handleCreate}>Create</button>}
+{permissions.canApprove && <button onClick={handleApprove}>Approve</button>}
+{permissions.canExport && <button onClick={handleExport}>Export</button>}
 ```
+
+The matching backend handler lives in `permissions.ts` and reads the granted capabilities straight
+from the requestor:
+
+```typescript
+// permissions.ts
+const has = (permission: Permission): boolean => {
+  const granted = ketrics.requestor.applicationPermissions;
+  return granted.includes("*") || granted.includes(permission);
+};
+
+export const getPermissions = async () => ({
+  canWrite: has("write"),
+  canApprove: has("approve"),
+  canExport: has("export"),
+  userId: ketrics.requestor.userId,
+  userName: ketrics.requestor.name,
+});
+```
+
+Hiding a button is a convenience, never a control: every handler still calls `requirePermission`.
 
 ### Multi-view pattern
 
@@ -572,7 +599,7 @@ The app header uses a fixed 56px bar with title on the left and configuration co
   </div>
   <div className="app-header-right">
     <EmpresaSelector ... />
-    {permissions.isApprover && (
+    {permissions.canApprove && (
       <button className="btn btn-secondary btn-sm" title="Configuración">
         <Settings size={18} />
       </button>
@@ -634,7 +661,7 @@ Toolbars appear above tables or lists with left/right groups for actions and con
     </button>
   </div>
   <div className="toolbar-right">
-    {permissions.isEditor && (
+    {permissions.canWrite && (
       <button className="btn btn-primary btn-sm">
         <Plus size={14} /> Nueva solicitud
       </button>
