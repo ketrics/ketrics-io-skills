@@ -4,7 +4,7 @@ Complete reference for the `ketrics` global object and backend handler patterns.
 
 ## Handler function pattern
 
-Every handler is an async function that takes a typed payload and returns a result. Handlers are exported by name from `backend/src/index.ts` and listed in the `functions` array in `ketrics.config.json`. (The `actions` array is something different — it holds the app's role-style permission slots, not handler names. See `CONFIG_AND_DEPLOY.md`.)
+Every handler is an async function that takes a typed payload and returns a result. Handlers are exported by name from `backend/src/index.ts` and listed in the `functions` array in `ketrics.config.json`. (The `actions` array is something different — it holds the capabilities the app enforces, not handler names. See `CONFIG_AND_DEPLOY.md`.)
 
 ```typescript
 interface MyPayload {
@@ -13,7 +13,7 @@ interface MyPayload {
 }
 
 const myHandler = async (payload: MyPayload) => {
-  requireEditor(); // permission check
+  requirePermission("write"); // capability check
   const { id, name } = payload;
 
   // Validate input
@@ -34,7 +34,7 @@ export { myHandler };
 
 ## ketrics.environment
 
-Read application environment variables. Declare each one in `ketrics.config.json` under `environmentVariables` — on deploy, any declared variable that does not yet exist is created with an empty value for an admin to fill in the Ketrics dashboard.
+Read application environment variables. Declare each one in `ketrics.config.json` under `environment` — on deploy, any declared variable that does not yet exist is created with an empty value for an admin to fill in the Ketrics dashboard. (The key is `environment`; the old `environmentVariables` name now fails the deploy outright.) Variables bound to a `resources` entry are declared implicitly and need no `environment` entry of their own.
 
 ```typescript
 // Simple string value
@@ -90,43 +90,68 @@ Context about the authenticated user making the request.
 ketrics.requestor.userId; // string — User ID
 ketrics.requestor.name; // string — Display name
 ketrics.requestor.email; // string — Email address
-ketrics.requestor.applicationPermissions; // string[] — e.g., ["editor"]
+ketrics.requestor.applicationPermissions; // string[] — granted capabilities, e.g. ["read", "write"] (or ["*"])
 ```
+
+`applicationPermissions` holds the **capabilities** the requestor was granted through their roles — the same codes declared in `actions` in `ketrics.config.json` — or `["*"]` for full access. Check against a capability, never against a role code.
 
 ### Permission checking pattern
 
-Define a helper for each role used in the application:
+`permissions.ts` owns the app's capability list and a single typed guard:
 
 ```typescript
-function requireEditor(): void {
-  if (!ketrics.requestor.applicationPermissions.includes("editor")) {
-    throw new Error("Permission denied: editor role required");
+// permissions.ts
+
+/** The permissions this application enforces. Keep in sync with `actions` in ketrics.config.json. */
+export const PERMISSIONS = ["read", "write", "export", "approve"] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+export function requirePermission(permission: Permission): void {
+  const granted = ketrics.requestor.applicationPermissions;
+  if (!granted.includes("*") && !granted.includes(permission)) {
+    throw new Error(`Permission denied: "${permission}" required`);
   }
 }
+```
 
-function requireApprover(): void {
-  if (!ketrics.requestor.applicationPermissions.includes("approver")) {
-    throw new Error("Permission denied: approver role required");
-  }
-}
-
-function requireAdmin(): void {
-  if (!ketrics.requestor.applicationPermissions.includes("admin")) {
-    throw new Error("Permission denied: admin role required");
-  }
-}
-
-// Usage: call at the start of handlers — different handlers require different roles
+```typescript
+// Usage: call at the start of handlers — different handlers require different capabilities
 const createItem = async (payload: CreatePayload) => {
-  requireEditor(); /* ... */
+  requirePermission("write"); /* ... */
 };
 const approveItem = async (payload: ApprovePayload) => {
-  requireApprover(); /* ... */
+  requirePermission("approve"); /* ... */
 };
-const revertItem = async (payload: RevertPayload) => {
-  requireAdmin(); /* ... */
+const exportItems = async (payload: ExportPayload) => {
+  requirePermission("export"); /* ... */
 };
 ```
+
+Named sugar is fine where it reads better, as long as it goes through the guard:
+
+```typescript
+export const requireApprove = () => requirePermission("approve");
+```
+
+`PERMISSIONS` is per-application: declare the capabilities *your* handlers enforce. The four above are a common starting set, not a fixed vocabulary — an app whose handlers must distinguish reverting a posted document from approving one declares a `revert` capability too. Whatever you choose, the same codes must appear in `actions` in `ketrics.config.json`; the two lists are hand-synced and nothing verifies them.
+
+#### Why the parameter is typed
+
+`requirePermission` takes a `Permission`, not a `string`, so a typo is a **compile error**:
+
+```
+error TS2345: Argument of type '"wirte"' is not assignable to parameter of type
+'"read" | "write" | "export" | "approve"'.
+```
+
+With an untyped `requireAction(action: string)`, `requireAction("wirte")` compiles happily and produces a handler **no role can ever reach**: nobody is granted `wirte`, so every call throws, and nothing anywhere reports a problem. It surfaces months later as "that button doesn't work".
+
+#### Never check a role code
+
+The older convention defined one helper per role — `requireEditor()` testing `applicationPermissions.includes("editor")`. That compares an **action list against a role name** and can never match, so the handler is dead for every user. `applicationPermissions` contains capabilities; roles are how capabilities get granted, and their codes never appear in it.
+
+Capabilities are also what make partial combinations possible: with `read`/`write`/`export`/`approve` as the atoms, a role can grant `approve` without `write`. Role-named actions collapse `roles` into a 1:1 restatement of `actions` and force a code change every time someone needs a new combination.
 
 ## ketrics.Database
 
@@ -300,7 +325,7 @@ NoSQL document store with DynamoDB-style partition key (pk) and sort key (sk).
 const docdb = await ketrics.DocumentDb.connect(getDocDbCode());
 ```
 
-The env-var name (`APP_DATA_DOCDB` in the example helper) must match the `code` of an entry under `resources.documentdb` in `ketrics.config.json`, and that variable must be declared in `environmentVariables`.
+The env-var name (`APP_DATA_DOCDB` in the example helper) is the variable bound to an entry under `resources.documentdb` in `ketrics.config.json` — either the entry's explicit `environmentVariable`, or the name derived from its kind and `code` (`app-data` + `documentdb` → `APP_DATA_DOCDB`). A derived name needs no `environment` entry; an explicit one does.
 
 ### Put (create or overwrite)
 
@@ -426,7 +451,7 @@ sk = `KEY#${lookupKey}`;
 ```typescript
 // CREATE
 const createItem = async (payload: CreatePayload) => {
-  requireEditor();
+  requirePermission("write");
   const { name } = payload;
   if (!name?.trim()) throw new Error("name is required");
 
@@ -463,7 +488,7 @@ const listItems = async () => {
 
 // UPDATE
 const updateItem = async (payload: UpdatePayload) => {
-  requireEditor();
+  requirePermission("write");
   const { id, name } = payload;
   if (!id) throw new Error("id is required");
 
@@ -483,7 +508,7 @@ const updateItem = async (payload: UpdatePayload) => {
 
 // DELETE
 const deleteItem = async (payload: { id: string }) => {
-  requireEditor();
+  requirePermission("write");
   const { id } = payload;
   if (!id) throw new Error("id is required");
 
@@ -572,7 +597,7 @@ function attachmentDisposition(filename: string): string {
 
 ```typescript
 const exportData = async (payload: { data: Record<string, unknown>[] }) => {
-  requireEditor();
+  requirePermission("export");
   const { data } = payload;
   if (!data?.length) throw new Error("No data to export");
 
@@ -847,7 +872,7 @@ The calling handler should:
 
 ```typescript
 const processEntity = async (payload: { id: string }) => {
-  requireEditor();
+  requirePermission("write");
   const docdb = await ketrics.DocumentDb.connect(getDocDbCode());
   const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "APROBADA") throw new Error("Must be APROBADA");
@@ -1137,14 +1162,16 @@ interface MyEntity {
 - **PENDIENTE**: Items can be added/removed/modified. Can transition to `APROBADA` or be deleted.
 - **APROBADA**: Locked for modifications. Can transition to `EN_PROCESO` (background job) or back to `PENDIENTE`.
 - **EN_PROCESO**: Intermediate state during async operations. Background job transitions to `CONTABILIZADA` or `ERROR`.
-- **CONTABILIZADA**: Final success state. Admin can revert to `APROBADA`.
-- **ERROR**: Background job failed. Admin can revert to `APROBADA` to retry.
+- **CONTABILIZADA**: Final success state. A user granted `revert` can return it to `APROBADA`.
+- **ERROR**: Background job failed. A user granted `revert` can return it to `APROBADA` to retry.
+
+Note the capabilities this workflow needs: `approve` for the forward transition and `revert` for the backward one. They are separate because the handlers must distinguish them — a worked example of "a handler must behave differently → new capability" (see [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md)). Both belong in `PERMISSIONS` and in `actions`; which roles get them is then a config decision.
 
 ### Validating transitions in handlers
 
 ```typescript
 const approveEntity = async (payload: { id: string }) => {
-  requireApprover();
+  requirePermission("approve");
   const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "PENDIENTE") {
     throw new Error("Can only approve entities in PENDIENTE state");
@@ -1157,7 +1184,7 @@ const approveEntity = async (payload: { id: string }) => {
 };
 
 const revertEntity = async (payload: { id: string }) => {
-  requireAdmin();
+  requirePermission("revert");
   const entity = (await docdb.get(pk, sk)) as unknown as MyEntity;
   if (entity.estado !== "CONTABILIZADA" && entity.estado !== "ERROR") {
     throw new Error("Can only revert CONTABILIZADA or ERROR entities");
