@@ -47,7 +47,7 @@ const connections: { code: string; name: string }[] = JSON.parse(raw);
 
 ### Never hardcode resource codes
 
-DocumentDB resource codes, Volume codes, and Database connection codes differ per tenant and per environment. They must **never** appear as string literals in handler code — read them from `ketrics.environment`, and **never fall back to a hardcoded default**.
+DocumentDB, Volume, Secret, Parameter and Connection codes differ per tenant and per environment. They must **never** appear as string literals in handler code — read them from `ketrics.environment`, and **never fall back to a hardcoded default**.
 
 ```typescript
 // ❌ never — hardcoded code, and a literal fallback is just as bad
@@ -72,15 +72,133 @@ function requireEnv(name: string): string {
 export const getDocDbCode = (): string => requireEnv("APP_DATA_DOCDB");
 export const getExportsVolumeCode = (): string => requireEnv("EXPORTS_VOLUME");
 export const getMainDbConnectionCode = (): string => requireEnv("MAIN_DB_CONNECTION");
+export const getBillingConfigCode = (): string => requireEnv("BILLING_CONFIG_PARAMETER");
 ```
 
 Common environment variables:
 
 - `*_DOCDB` — DocumentDB resource code (one env var per DocumentDB resource)
 - `*_VOLUME` — Volume resource code (one env var per Volume)
-- `*_DB_CONNECTION` — SQL database connection code
+- `*_SECRET` — Secret resource code (one env var per Secret)
+- `*_PARAMETER` — Parameter resource code (one env var per Parameter)
+- `*_CONNECTION` — SQL data connection code (one env var per Connection)
 - `DB_CONNECTIONS` — JSON array of `{code, name}` when the app offers a connection dropdown
 - `*_APP_CODE` — application code for cross-app invocation
+
+### Environment variable, or Parameter?
+
+Both carry configuration, and the split is about **scope and shape**:
+
+- **`environment`** — a single string, private to this application, edited per application in the
+  portal. Right for a threshold, a base URL, a feature flag, and for the resource codes above.
+- **`ketrics.Parameter`** — a JSON **object**, owned by the tenant and read by **several
+  applications**. Right for a shared chart of accounts, tax tables, a company registry: edit once,
+  every app that declares the parameter sees the change on its next invocation.
+
+Neither is for credentials. Those go in `ketrics.Secret`, which is encrypted.
+
+## ketrics.Parameter
+
+Shared, **unencrypted** JSON configuration — the non-secret twin of `ketrics.Secret`. A parameter
+is a tenant-level JSON object that several applications can read, so config that would otherwise
+be copied into each app's environment lives in one place.
+
+Requires `@ketrics/sdk-backend` >= 0.17.0 — that release added the typings. If `tsc` reports that
+`Parameter` does not exist on the `ketrics` object, the devDependency is older.
+
+```typescript
+const config = await ketrics.Parameter.get(ketrics.environment["BILLING_CONFIG_PARAMETER"]);
+console.log(config.currency);
+```
+
+`get()` returns the value **already parsed** — not a string, so no `JSON.parse` at the call site.
+Type it with the generic:
+
+```typescript
+interface BillingConfig {
+  currency: string;
+  taxRate: number;
+  paymentTerms: { code: string; days: number }[];
+}
+
+const config = await ketrics.Parameter.get<BillingConfig>(getBillingConfigCode());
+```
+
+`exists()` answers without throwing, for genuinely optional config:
+
+```typescript
+const code = ketrics.environment["FEATURE_FLAGS_PARAMETER"];
+const flags = (await ketrics.Parameter.exists(code))
+  ? await ketrics.Parameter.get<FeatureFlags>(code)
+  : DEFAULTS;
+```
+
+It returns `false` both when the parameter does not exist and when the app has no grant for it —
+the two are deliberately indistinguishable, so an app cannot probe for codes outside its scope.
+
+### Declare the parameter in ketrics.config.json
+
+Access is granted by declaration, not by knowing the code:
+
+```json
+"resources": {
+  "parameter": [
+    { "code": "billing-config", "description": "Currency, tax rate and invoice terms" }
+  ]
+}
+```
+
+Deploy binds it to `BILLING_CONFIG_PARAMETER` (derived, so it needs no `environment` entry) and
+seeds `parameter:billing-config` on the application role. Reading a parameter the app never
+declared throws `AccessDeniedError`. As with every resource, read the code from the environment —
+never a string literal.
+
+### The returned object is frozen, and memoized per invocation
+
+- **Deep-frozen.** Mutating any level of the returned object fails (silently in sloppy mode,
+  with a `TypeError` under `"use strict"`). Copy before changing anything locally:
+  `const local = { ...config, currency: "USD" };`
+- **Memoized for the invocation.** A successful `get()` is cached, so reading the same parameter
+  in five helpers costs one lookup and returns the same object. The flip side: a parameter edited
+  while an invocation is running is not observed until the next invocation. Failed lookups are
+  never cached, so a denial cannot outlive the grant that fixed it.
+
+Cache it in a module-level variable only if you understand the consequence — the sandbox may reuse
+a warm process across invocations, so a hand-rolled cache can outlive the memo and go stale.
+
+### Error handling
+
+```typescript
+try {
+  const config = await ketrics.Parameter.get<BillingConfig>(getBillingConfigCode());
+  return { taxRate: config.taxRate };
+} catch (error) {
+  if (error instanceof ketrics.Parameter.NotFoundError) {
+    throw new Error("Billing configuration has not been created for this tenant");
+  }
+  if (error instanceof ketrics.Parameter.AccessDeniedError) {
+    throw new Error("This application is not granted access to the billing configuration");
+  }
+  throw error;
+}
+```
+
+| Error | Thrown when |
+|-------|-------------|
+| `ketrics.Parameter.NotFoundError` | No parameter with that code exists in the tenant |
+| `ketrics.Parameter.AccessDeniedError` | The app has no grant for it — usually a missing `resources.parameter` declaration |
+| `ketrics.Parameter.InvalidJsonError` | The stored value is not a JSON object (only possible for a record written outside the API) |
+
+Every error carries `parameterCode`, `operation` and `timestamp`, and `ketrics.Parameter.isError`
+/ `isErrorType` are available as type guards.
+
+### Limits and the security rule
+
+- The value must be a JSON **object** — arrays, scalars and `null` are rejected at write time.
+- Serialized value: max **64 KiB**. Parameters per tenant: **100** (1000 on Enterprise).
+- **Values are stored in plaintext and are returned by the API.** Anyone holding
+  `parameter:DescribeParameter` for a matching pattern can read one. **Credentials, API keys and
+  tokens belong in `ketrics.Secret`, never in a Parameter.**
 
 ## ketrics.requestor
 
