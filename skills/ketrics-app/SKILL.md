@@ -1,6 +1,6 @@
 ---
 name: ketrics-app
-description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, or deploying to the Ketrics platform.
+description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, shared configuration parameters, or deploying to the Ketrics platform.
 ---
 
 # Ketrics Application Builder
@@ -67,8 +67,10 @@ version:
    `approve`), each guarded by at least one handler. Not handler names. Not role names.
 2. **`roles` = jobs** — name them after what someone does, and compose capabilities into them.
 3. **New capability only when a guard needs it.** If only the audience changes, add a role.
-4. **`resources` vs `environment`** — a `documentdb`/`volume`/`secret` code is a `resources` entry;
-   everything else, including SQL data connection codes, is a plain `environment` entry.
+4. **`resources` vs `environment`** — the code of any Ketrics-managed resource is a `resources`
+   entry, and there are five kinds: `documentdb`, `volume`, `secret`, `parameter`, `connection`
+   (SQL data connections included). Only plain values — thresholds, URLs, flags — are
+   `environment` entries.
 
 ```json
 {
@@ -90,7 +92,9 @@ version:
   "include": ["dist/**/*"],
   "exclude": ["node_modules", "*.test.js"],
   "resources": {
-    "documentdb": [{ "code": "app-data", "description": "Main data store" }]
+    "documentdb": [{ "code": "app-data", "description": "Main data store" }],
+    "parameter": [{ "code": "billing-config", "description": "Shared JSON config, read by several apps" }],
+    "connection": [{ "code": "main-db", "description": "SQL data connection" }]
   }
 }
 ```
@@ -105,8 +109,11 @@ version:
 - `functions` lists every exported handler name, including background handlers prefixed with `_`
 - `roles` declares the roles to create; every action a role lists must be declared in `actions`.
   Without `roles`, no per-user application roles are created at all
-- `resources` declares DocumentDB collections, Volumes and Secrets the app needs. Each binds to an
-  environment variable — named explicitly, or derived (`app-data` → `APP_DATA_DOCDB`)
+- `resources` declares the Ketrics-managed resources the app needs, under five kinds:
+  `documentdb`, `volume`, `secret`, `parameter`, `connection`. Each binds to an environment
+  variable — named explicitly, or derived (`app-data` → `APP_DATA_DOCDB`,
+  `billing-config` → `BILLING_CONFIG_PARAMETER`) — and deploy seeds the matching grant on the
+  application role, so declaring a resource is what gives the app access to it
 - `environment` declares every other variable the app reads. The legacy key `environmentVariables`
   now **fails the deploy**
 
@@ -116,7 +123,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.13.1 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.17.0 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
@@ -181,7 +188,8 @@ ketrics deploy --env .env
 **Never install the CLI unpinned.** `npm install -g @ketrics/ketrics-cli` on Node older than 24
 silently resolves back to `0.1.0`, which ships a ZIP with no `ketrics.config.json` in it and still
 **reports success** — the app keeps its old actions, roles and variables while CI stays green. In
-CI, pin `@^0.11`, set `node-version: 24`, and add `.npmrc` with `engine-strict=true`.
+CI, pin `@^0.14` (`parameter` and `connection` resources need 0.14.0), set `node-version: 24`,
+and add `.npmrc` with `engine-strict=true`.
 
 ## Backend file organization
 
@@ -232,6 +240,24 @@ const value = ketrics.environment["MY_VAR"];
 ```
 
 Read app-specific configuration. Common pattern: store JSON arrays for connection configs, resource codes, feature flags.
+
+### Parameters (shared JSON config)
+
+```typescript
+interface BillingConfig { currency: string; taxRate: number }
+
+const code = ketrics.environment["BILLING_CONFIG_PARAMETER"];
+const config = await ketrics.Parameter.get<BillingConfig>(code);
+
+// exists() answers without throwing, for genuinely optional config
+if (await ketrics.Parameter.exists(code)) { /* ... */ }
+```
+
+Tenant-level JSON objects shared across applications — the non-secret twin of `ketrics.Secret`.
+`get()` returns the value already parsed and deep-frozen, memoized for the invocation. Declare the
+parameter under `resources.parameter` in `ketrics.config.json`: that declaration is what grants
+access. **Values are unencrypted — credentials go in `ketrics.Secret`.** See
+[BACKEND_REFERENCE.md](BACKEND_REFERENCE.md#ketricsparameter).
 
 ### Requestor context
 
@@ -496,13 +522,17 @@ const items = result.items.filter((item) => {
 - [ ] index.ts contains only re-exports of every handler in the functions array
 - [ ] Write handler functions using ketrics.* global, co-located with related domain helpers, each
       guarded with requirePermission(...)
+- [ ] Every managed resource declared under its kind (documentdb / volume / secret / parameter /
+      connection) and its code read from ketrics.environment — never a string literal
+- [ ] Config shared with other apps lives in a Parameter, not copied into each app's environment;
+      credentials live in a Secret, never in a Parameter
 - [ ] Background job handlers prefixed with _ and listed in the functions array
 - [ ] State machine transitions validated in each handler
 - [ ] Set up frontend with React, Vite, and @ketrics/sdk-frontend
 - [ ] Create APIClient service layer with dev/prod branching
 - [ ] Write mock handlers for local development
 - [ ] Define TypeScript interfaces in types.ts
-- [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.11), node-version 24, .npmrc with
+- [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.14), node-version 24, .npmrc with
       engine-strict=true
 - [ ] Configure environment variables in Ketrics dashboard
 - [ ] After the first deploy, confirm the app's actions/roles/variables actually changed

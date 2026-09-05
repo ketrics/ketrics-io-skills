@@ -30,7 +30,7 @@ The config file at the project root declares the application to the Ketrics plat
   ],
   "environment": [
     { "name": "STRIPE_API_KEY", "description": "Secret resource code for the Stripe API key" },
-    { "name": "MAIN_DB_CONNECTION", "description": "SQL data connection code" }
+    { "name": "INVOICE_DUE_DAYS", "description": "Days before an invoice is flagged overdue" }
   ],
   "entry": "dist/index.js",
   "include": ["dist/**/*"],
@@ -54,13 +54,26 @@ The config file at the project root declares the application to the Ketrics plat
         "description": "What this secret holds",
         "environmentVariable": "STRIPE_API_KEY"
       }
+    ],
+    "parameter": [
+      {
+        "code": "billing-config",
+        "description": "Shared, non-secret JSON configuration this app reads"
+      }
+    ],
+    "connection": [
+      {
+        "code": "main-db",
+        "description": "SQL data connection this app queries"
+      }
     ]
   }
 }
 ```
 
-The `documentdb` and `volume` entries above declare no `environmentVariable`: their names are
-**derived** (`APP_DATA_DOCDB`, `EXPORTS_VOLUME`). The `secret` entry names one explicitly, so
+The `documentdb`, `volume`, `parameter` and `connection` entries above declare no
+`environmentVariable`: their names are **derived** (`APP_DATA_DOCDB`, `EXPORTS_VOLUME`,
+`BILLING_CONFIG_PARAMETER`, `MAIN_DB_CONNECTION`). The `secret` entry names one explicitly, so
 `STRIPE_API_KEY` must also appear in `environment`. Both forms are valid — see
 [Resource declarations](#resource-declarations--never-hardcode-resource-codes).
 
@@ -84,7 +97,7 @@ The `documentdb` and `volume` entries above declare no `environmentVariable`: th
 | `entry` | Yes | Path to the built backend bundle (relative to `backend/`) |
 | `include` | No | Glob patterns for files to include in deployment |
 | `exclude` | No | Glob patterns for files to exclude |
-| `resources` | No | Declares the DocumentDB, Volume and Secret resources the app uses. Each binds to an environment variable, declared or derived (see below) |
+| `resources` | No | Declares the DocumentDB, Volume, Secret, Parameter and Connection resources the app uses. Each binds to an environment variable, declared or derived (see below) |
 
 ### What deploy does with this file
 
@@ -239,6 +252,8 @@ result would start with a digit, then append the kind's suffix.
 | `documentdb` | `app-data` | `APP_DATA_DOCDB` |
 | `volume` | `exports` | `EXPORTS_VOLUME` |
 | `secret` | `stripe-key` | `STRIPE_KEY_SECRET` |
+| `parameter` | `billing-config` | `BILLING_CONFIG_PARAMETER` |
+| `connection` | `main-db` | `MAIN_DB_CONNECTION` |
 
 A derived name needs **no** entry in `environment` — it is implicit, and it is created and made
 mandatory exactly like a declared one. Name a variable explicitly only when you want something the
@@ -250,7 +265,8 @@ Whichever form you use, the pattern in handlers is the same:
 1. Declare the resource under its kind, with or without an explicit `environmentVariable`.
 2. In handlers, read the code via `ketrics.environment["VAR_NAME"]` — never a string literal.
 
-Resource types: `documentdb`, `volume`, and `secret`.
+Resource kinds: `documentdb`, `volume`, `secret`, `parameter`, and `connection`. An unknown
+kind is rejected by name on deploy, not ignored.
 
 **DocumentDB**: NoSQL document stores.
 
@@ -301,37 +317,73 @@ explicitly, so it must also be declared in `environment`:
 }
 ```
 
-#### `resources` entry, or plain `environment` entry?
-
-Both end up as environment variables the handler reads. The only question is whether the platform
-has a resource to pick.
-
-**Use a `resources` entry when the value is the code of a Ketrics-managed resource** — and there
-are exactly three kinds: `documentdb`, `volume`, `secret`. Declaring it makes the Application form
-render a resource picker, so an admin chooses from the resources that exist instead of typing a
-code from memory.
-
-**Use a plain `environment` entry for everything else** — API base URLs, thresholds, feature
-flags, recipient lists, and the codes of anything the platform does not model as a resource.
-
-The trap is the third case: a value that names *some* platform object which is nonetheless not one
-of the three kinds. **SQL data connections are the standard example** — they are real platform
-objects, but they are not a `resources` kind, so there is no binding to declare and no picker to
-render:
+**Parameter**: shared, **unencrypted** JSON configuration — the non-secret twin of Secret, meant
+for settings several applications read from one place.
 
 ```json
-"environment": [
-  { "name": "MAIN_DB_CONNECTION", "description": "SQL data connection code" }
-]
+"resources": {
+  "parameter": [
+    { "code": "billing-config", "description": "Currency, tax rate and invoice terms" }
+  ]
+}
+```
+
+```typescript
+const config = await ketrics.Parameter.get(ketrics.environment["BILLING_CONFIG_PARAMETER"]);
+```
+
+Declaring the resource is what grants the app access: deploy seeds the application role's
+`parameter:GetParameterValue` grant, scoped to `parameter:{code}`, and `Parameter.get` throws
+`AccessDeniedError` for a parameter the app never declared. **Parameter values are stored in plaintext and are readable by anyone holding
+`parameter:DescribeParameter` for a matching pattern — credentials belong in `secret`.** See
+[ketrics.Parameter](BACKEND_REFERENCE.md#ketricsparameter) for the read API and its per-invocation
+memo.
+
+**Connection**: SQL data connections — same rule.
+
+```json
+"resources": {
+  "connection": [
+    { "code": "main-db", "description": "ERP database this app queries" }
+  ]
+}
 ```
 
 ```typescript
 const db = await ketrics.Database.connect(ketrics.environment["MAIN_DB_CONNECTION"]);
 ```
 
-It is still a declared variable, so it is still created empty on deploy and still mandatory. **The
-rule: if it is not `documentdb`, `volume` or `secret`, it is an `environment` entry, however
-platform-ish it feels.**
+Ketrics-managed databases need no separate kind: they are reached through a connection record like
+any other.
+
+#### `resources` entry, or plain `environment` entry?
+
+Both end up as environment variables the handler reads. The only question is whether the platform
+has a resource to pick.
+
+**Use a `resources` entry when the value is the code of a Ketrics-managed resource** — there are
+five kinds: `documentdb`, `volume`, `secret`, `parameter`, `connection`. Declaring it makes the
+Application form render a resource picker, so an admin chooses from the resources that exist
+instead of typing a code from memory, and deploy seeds the matching grant on the application role.
+
+**Use a plain `environment` entry for everything else** — API base URLs, thresholds, feature
+flags, recipient lists, and the codes of anything the platform does not model as a resource
+(another application's code for cross-app invocation, for instance).
+
+```json
+"environment": [
+  { "name": "INVOICE_DUE_DAYS", "description": "Days before an invoice is flagged overdue" }
+]
+```
+
+**The rule: if the value names a platform object of one of the five kinds, it is a `resources`
+entry; if it is a plain value the app just needs, it is an `environment` entry.**
+
+> **SQL data connections changed sides.** They used to be the standard example of a platform
+> object with no resource kind, declared as a plain `environment` entry. Since `connection` became
+> a declarable kind they belong under `resources` — a config that still declares them as a bare
+> environment variable keeps working, but gets no picker and no auto-granted
+> `connection:{code}`.
 
 ## Backend build
 
@@ -349,7 +401,7 @@ Uses esbuild to bundle the single `backend/src/index.ts` into `backend/dist/inde
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@ketrics/sdk-backend": "0.13.1",
+    "@ketrics/sdk-backend": "0.17.0",
     "@types/node": ">=24.0.0",
     "esbuild": "^0.27.2",
     "typescript": "^5.3.3"
@@ -425,7 +477,7 @@ The app's declared variables are every entry in `environment` **plus** every var
 So declare only what the app actually reads. An unused declaration is a permanent empty row in
 someone else's portal.
 
-**All resource codes belong in environment variables.** DocumentDB, Volume, and Secret resource codes, and Database connection codes, must never be hardcoded in source — declare each resource (or an `environment` entry, for anything that is not one of the three kinds) and read the value from `ketrics.environment` in handler code (see "Resource declarations" above).
+**All resource codes belong in environment variables.** DocumentDB, Volume, Secret, Parameter and Connection codes must never be hardcoded in source — declare each resource (or an `environment` entry, for anything that is not one of the five kinds) and read the value from `ketrics.environment` in handler code (see "Resource declarations" above).
 
 Common variables to declare for your app:
 
@@ -434,7 +486,8 @@ Common variables to declare for your app:
 | `*_DOCDB` | String | DocumentDB resource code (one env var per DocumentDB resource) |
 | `*_VOLUME` | String | Volume resource code (one env var per Volume) |
 | `*_SECRET` / `*_KEY` | String | Secret resource code (one env var per Secret) |
-| `*_DB_CONNECTION` | String | SQL database connection code |
+| `*_PARAMETER` | String | Parameter resource code (one env var per Parameter) |
+| `*_CONNECTION` | String | SQL data connection code (one env var per Connection) |
 | `*_APP_CODE` | String | Application code for cross-app invocation |
 | Custom variables | String | App-specific configuration (API keys, feature flags, ...) |
 
@@ -445,7 +498,7 @@ Common variables to declare for your app:
 > `engines` field still allows old Node, and installs that. The ancient CLI then builds a ZIP with
 > no `ketrics.config.json` in it and **reports a successful deploy**, so the app silently keeps its
 > previous actions, roles and declared variables while CI stays green. Three things together
-> prevent it: `node-version: 24`, a version range (`@^0.11`), and an `.npmrc` with
+> prevent it: `node-version: 24`, a version range (`@^0.14`), and an `.npmrc` with
 > `engine-strict=true` so an engine mismatch becomes an error instead of a silent downgrade.
 
 ### `.npmrc` (repository root)
@@ -484,7 +537,7 @@ jobs:
           node-version: 24
 
       # Install Ketrics CLI — ALWAYS pin. Unpinned silently installs 0.1.0 on old Node.
-      - run: npm install -g @ketrics/ketrics-cli@^0.11
+      - run: npm install -g @ketrics/ketrics-cli@^0.14
 
       # Generate .env file (only KETRICS_TOKEN is a secret)
       - name: Generate .env file
@@ -561,9 +614,9 @@ ketrics deploy --env .env
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@ketrics/sdk-backend` | 0.13.1 | Backend global types (devDependency) |
+| `@ketrics/sdk-backend` | 0.17.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0 |
 | `@ketrics/sdk-frontend` | ^0.3.0 | Frontend auth manager (dependency) |
-| `@ketrics/ketrics-cli` | `^0.11` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24 |
+| `@ketrics/ketrics-cli` | `^0.14` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24. `parameter` and `connection` resources need >= 0.14.0; an older CLI rejects the config |
 
 ## Deployment checklist
 
@@ -580,8 +633,11 @@ ketrics deploy --env .env
 - [ ] ketrics.config.json functions list every backend handler export
 - [ ] ketrics.config.json uses "environment" — the legacy "environmentVariables" key now FAILS the deploy
 - [ ] resources entries either omit environmentVariable (name is derived) or name one declared in environment
-- [ ] Anything that is not documentdb / volume / secret is a plain environment entry (SQL data connections included)
-- [ ] No DocumentDB / Volume / Secret / Database connection codes hardcoded in source
+- [ ] Every Ketrics-managed resource the app uses is declared under its kind — documentdb, volume,
+      secret, parameter or connection (SQL data connections included); only plain values are
+      environment entries
+- [ ] Secrets hold credentials; parameters hold shared, unencrypted JSON config — never the reverse
+- [ ] No DocumentDB / Volume / Secret / Parameter / Connection codes hardcoded in source
 - [ ] Backend builds successfully: cd backend && npm run build
 - [ ] Backend type-checks: cd backend && npx tsc --noEmit (catches typo'd permissions)
 - [ ] Frontend builds successfully: cd frontend && npm run build
@@ -589,7 +645,7 @@ ketrics deploy --env .env
 - [ ] Environment variable values filled in the Ketrics dashboard after first deploy
 - [ ] KETRICS_TOKEN secret set in GitHub repo settings
 - [ ] GitHub Actions workflow file in .github/workflows/deploy.yml
-- [ ] Workflow pins the CLI (@^0.11), uses node-version 24, and the repo has .npmrc with engine-strict=true
+- [ ] Workflow pins the CLI (@^0.14 — parameter/connection resources need 0.14.0), uses node-version 24, and the repo has .npmrc with engine-strict=true
 - [ ] After deploying, confirm the app's actions/roles/variables actually changed — a 0.1.0 CLI
       reports success while shipping a ZIP with no config in it
 ```
