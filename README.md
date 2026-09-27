@@ -71,6 +71,7 @@ Scaffolds and builds Ketrics tenant applications. Covers:
 - **Project scaffolding** — `ketrics.config.json`, backend/frontend directory structure
 - **Backend handlers** — Database queries, DocumentDB, Volumes, Excel generation, messaging, background jobs, HTTP client, cross-app invocation
 - **Frontend** — React + Vite + TypeScript with auth manager, service layer, mock handlers for local dev
+- **In-app user guide** — every app ships a "Guía de uso": an ⓘ header button for every user that opens the user documentation in a modal, kept true by tests and a CLAUDE.md rule
 - **Deployment** — GitHub Actions CI/CD pipeline, manual deploy via Ketrics CLI
 
 Reference docs included:

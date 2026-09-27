@@ -588,7 +588,9 @@ The app header uses a fixed 56px bar with title on the left and configuration co
 
 - `.app-header`: flex container with `space-between`, white background, bottom border
 - `.app-header-left`: app title (`<h1>`)
-- `.app-header-right`: empresa selector, settings button (role-gated)
+- `.app-header-right`: empresa selector, settings button (role-gated), user name, and — always last,
+  for every user — the ⓘ help button that opens the user guide (see
+  [In-app user guide](#in-app-user-guide-guía-de-uso--required))
 
 ### Example
 
@@ -600,10 +602,14 @@ The app header uses a fixed 56px bar with title on the left and configuration co
   <div className="app-header-right">
     <EmpresaSelector ... />
     {permissions.canApprove && (
-      <button className="btn btn-secondary btn-sm" title="Configuración">
-        <Settings size={18} />
+      <button className="btn btn-secondary btn-sm" title="Configuración" aria-label="Configuración">
+        <Settings size={18} aria-hidden="true" />
       </button>
     )}
+    {/* Always rendered, never role-gated: the user guide. */}
+    <button type="button" className="btn-icon boton-ayuda" onClick={() => setAyuda(true)} aria-label="Ayuda" title="Ayuda">
+      <CircleHelp size={20} aria-hidden="true" />
+    </button>
   </div>
 </header>
 ```
@@ -636,6 +642,268 @@ The app header uses a fixed 56px bar with title on the left and configuration co
   color: #1a1a1a;
 }
 ```
+
+## In-app user guide ("Guía de uso") — required
+
+**Every app ships its user documentation inside the app**, one click away: an ⓘ help button at the
+far right of the header opens a modal with the guide. Users of tenant apps rarely have other
+documentation, and the rules they can't guess (what enters a file, why a notice appears, who can
+do what) belong where they work. Build it with the first version of the screen, not later.
+
+### Rules
+
+- **The button is always there, for everyone.** Last element of `.app-header-right` (to the right of
+  the settings cog and the user name), rendered unconditionally: never behind a permission check, and
+  also while loading, on errors, or when the user has no read access — the guide explains those cases.
+- **Icon-only button:** `CircleHelp` from lucide-react with `aria-hidden`, plus `aria-label="Ayuda"`
+  and `title="Ayuda"`.
+- **It opens a modal** built on the app's accessible `<Modal>` (`role="dialog"`, `aria-modal`, focus
+  trap, Escape closes, focus returns to the ⓘ button). Large size, the body scrolls.
+- **Static content, no backend call**, written in the users' language (Spanish for most tenants), in
+  plain words — no handler names, no SQL, no jargon.
+- **Table of contents** at the top: links that move focus to each section's heading **without
+  changing the URL** (`preventDefault` + `scrollIntoView` + `focus`). The app runs in an iframe; a
+  hash change there is pointless at best.
+- **Content lives in `frontend/src/utils/guia.ts`** (sections, lists, FAQ) and the markup in
+  `frontend/src/components/GuiaUsuarioDialog.tsx`, so the content can be tested without a DOM.
+- **Anything the code already knows is derived or tested against the code**, never retyped freely:
+  profiles against `roles` in `ketrics.config.json`, file columns against the backend's layout
+  module, etc. — see [Keeping it true](#keeping-the-guide-true).
+
+### Sections
+
+Pick what applies; most apps need the first four and the last two.
+
+| Section | What it says |
+| --- | --- |
+| Qué hace la aplicación | Purpose in two sentences; where the data comes from; what it does *not* do |
+| El flujo | The main task step by step, in the order of the screen's buttons |
+| Estados | Every status badge the user can see, and what moves it |
+| Descargar / eliminar | Downloads (on click), what delete removes, what can't be undone |
+| Formatos | Files the app produces: columns, number/date formats, file names |
+| Perfiles | Each role in `ketrics.config.json`: name and what it can do, in plain words |
+| Auditoría | What is recorded (and what never is), who can see it |
+| Preguntas frecuentes | The error messages and surprises users actually hit, with what to do |
+
+### Header button
+
+```tsx
+import { CircleHelp } from "lucide-react";
+import { GuiaUsuarioDialog } from "./components/GuiaUsuarioDialog";
+
+const [ayuda, setAyuda] = useState(false);
+
+<div className="app-header-right">
+  {/* …selector, settings cog (role-gated), user name… */}
+  {/* Para todos, siempre (también cargando o con error): la guía explica esos casos. */}
+  <button type="button" className="btn-icon boton-ayuda" onClick={() => setAyuda(true)} aria-label="Ayuda" title="Ayuda">
+    <CircleHelp size={20} aria-hidden="true" />
+  </button>
+</div>
+
+{ayuda && <GuiaUsuarioDialog onClose={() => setAyuda(false)} />}
+```
+
+### Content module — `frontend/src/utils/guia.ts`
+
+```typescript
+/**
+ * Contenido de la guía de uso. Regla: cuando cambia el flujo, los formatos,
+ * los perfiles o la auditoría, la guía cambia en el mismo PR.
+ */
+export interface SeccionGuia {
+  id: string;
+  titulo: string;
+}
+
+/** Las secciones, en el orden del índice. El id es el ancla (con prefijo "guia-"). */
+export const SECCIONES_GUIA: readonly SeccionGuia[] = [
+  { id: "que-hace", titulo: "Qué hace la aplicación" },
+  { id: "flujo", titulo: "Cómo se usa" },
+  { id: "estados", titulo: "Estados" },
+  { id: "perfiles", titulo: "Perfiles" },
+  { id: "preguntas", titulo: "Preguntas frecuentes" },
+];
+
+export const anclaGuia = (id: string): string => `guia-${id}`;
+
+/** Un perfil por rol de ketrics.config.json (misma lista, mismo orden: una prueba lo revisa). */
+export const PERFILES_GUIA = [
+  { codigo: "viewer", nombre: "Consulta", puede: "Ve los registros y su estado." },
+  { codigo: "editor", nombre: "Editor", puede: "Todo lo anterior, y además crea y modifica registros." },
+] as const;
+
+export const PREGUNTAS_GUIA = [
+  { pregunta: "No veo el botón Nuevo.", respuesta: "Tu perfil es de consulta. Pide a un administrador el perfil Editor." },
+] as const;
+```
+
+### Dialog — `frontend/src/components/GuiaUsuarioDialog.tsx`
+
+```tsx
+import type { MouseEvent, ReactNode } from "react";
+import { BookOpen } from "lucide-react";
+import { anclaGuia, PERFILES_GUIA, PREGUNTAS_GUIA, SECCIONES_GUIA } from "../utils/guia";
+import { Modal } from "./Modal";
+
+const titulo = (id: string) => SECCIONES_GUIA.find((s) => s.id === id)!.titulo;
+
+/** Lleva el foco al título de la sección sin tocar la URL (la app vive en un iframe). */
+const irA = (e: MouseEvent<HTMLAnchorElement>, id: string) => {
+  e.preventDefault();
+  const h = document.getElementById(anclaGuia(id));
+  h?.scrollIntoView({ block: "start" });
+  h?.focus();
+};
+
+function Seccion({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <section className="guia-seccion" aria-labelledby={anclaGuia(id)}>
+      <h3 id={anclaGuia(id)} tabIndex={-1}>{titulo(id)}</h3>
+      {children}
+    </section>
+  );
+}
+
+export function GuiaUsuarioDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal titulo="Guía de uso" icono={<BookOpen size={18} aria-hidden="true" />} tamano="modal-card-lg" onClose={onClose}>
+      <div className="modal-body guia">
+        <nav aria-label="Contenido de la guía">
+          <ol className="guia-indice">
+            {SECCIONES_GUIA.map((s) => (
+              <li key={s.id}>
+                <a href={`#${anclaGuia(s.id)}`} onClick={(e) => irA(e, s.id)}>{s.titulo}</a>
+              </li>
+            ))}
+          </ol>
+        </nav>
+
+        <Seccion id="que-hace">
+          <p>…</p>
+        </Seccion>
+
+        <Seccion id="perfiles">
+          <dl className="guia-lista">
+            {PERFILES_GUIA.map((p) => (
+              <div key={p.codigo}>
+                <dt>{p.nombre}</dt>
+                <dd>{p.puede}</dd>
+              </div>
+            ))}
+          </dl>
+        </Seccion>
+
+        <Seccion id="preguntas">
+          <dl className="guia-lista">
+            {PREGUNTAS_GUIA.map((q) => (
+              <div key={q.pregunta}>
+                <dt>{q.pregunta}</dt>
+                <dd>{q.respuesta}</dd>
+              </div>
+            ))}
+          </dl>
+        </Seccion>
+      </div>
+      <div className="modal-footer">
+        <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar</button>
+      </div>
+    </Modal>
+  );
+}
+```
+
+Tables inside the guide (e.g. a file's columns) get a `<caption>` and `<th scope="col">`.
+
+### CSS
+
+```css
+.boton-ayuda { color: #1d4ed8; }
+
+.guia-indice {
+  columns: 2;
+  margin: 0 0 20px;
+  padding: 12px 12px 12px 32px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+.guia-indice a { color: #1d4ed8; }            /* AA on #f9fafb */
+.guia-seccion { margin-bottom: 20px; }
+.guia-seccion h3 { margin: 0 0 8px; font-size: 15px; color: #1a1a1a; scroll-margin-top: 8px; }
+.guia-seccion h3:focus-visible,
+.guia-indice a:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.guia-lista dt { font-weight: 600; }
+.guia-lista dd { margin: 0 0 10px; }
+
+@media (max-width: 600px) {
+  .guia-indice { columns: 1; }
+}
+```
+
+**The modal must fit a phone screen.** On iPhone Safari `100vh` is taller than the visible area
+(it ignores the browser bars), so a `max-height: calc(100vh - 32px)` modal hides its own title and
+footer. Use `dvh` with a `vh` fallback, and keep header and footer from shrinking — this applies to
+every modal, and the guide is the first one long enough to show it:
+
+```css
+.modal-card {
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);   /* the visible viewport */
+  display: flex;
+  flex-direction: column;
+}
+.modal-header, .modal-footer { flex-shrink: 0; }
+.modal-body { flex: 1; min-height: 0; overflow-y: auto; }
+```
+
+### Keeping the guide true
+
+A guide that describes last month's app is worse than none. Three things keep it honest:
+
+1. **A rule in the app's `CLAUDE.md`:** *when the flow, a file format, the roles or what is audited
+   changes, the guide changes in the same PR* — and a step "update the guide if what the user sees
+   changes" in its "Adding a handler" checklist.
+2. **Tests that tie the guide to the code** (`frontend/test/guia.test.ts`, run with `node:test`):
+
+   ```typescript
+   import { test } from "node:test";
+   import assert from "node:assert/strict";
+   import { readFileSync } from "node:fs";
+   import { join } from "node:path";
+   import { createElement } from "react";
+   import { renderToStaticMarkup } from "react-dom/server";
+   import { GuiaUsuarioDialog } from "../src/components/GuiaUsuarioDialog";
+   import { anclaGuia, PERFILES_GUIA, SECCIONES_GUIA } from "../src/utils/guia";
+
+   test("los perfiles son los roles de ketrics.config.json", () => {
+     const config = JSON.parse(readFileSync(join(process.cwd(), "..", "ketrics.config.json"), "utf8"));
+     assert.deepEqual(
+       PERFILES_GUIA.map((p) => [p.codigo, p.nombre]),
+       config.roles.map((r: { code: string; name: string }) => [r.code, r.name]),
+     );
+   });
+
+   test("cada sección se renderiza con su título enfocable, y el índice enlaza a todas", () => {
+     const html = renderToStaticMarkup(createElement(GuiaUsuarioDialog, { onClose: () => {} }));
+     for (const s of SECCIONES_GUIA) assert.ok(html.includes(`<h3 id="${anclaGuia(s.id)}" tabindex="-1">`), s.id);
+     const enlaces = [...html.matchAll(/<a href="#([\w-]+)">/g)].map((m) => m[1]);
+     assert.deepEqual(enlaces, SECCIONES_GUIA.map((s) => anclaGuia(s.id)));
+   });
+
+   test("el botón ⓘ está en el header sin condición", () => {
+     const app = readFileSync(join(process.cwd(), "src", "App.tsx"), "utf8");
+     const header = /<div className="app-header-right">([\s\S]*?)<\/header>/.exec(app)![1].split("\n");
+     const boton = header.findIndex((l) => l.includes("boton-ayuda"));
+     assert.match(header[boton], /^\s*<button\b/, "no va dentro de un && ni de un ternario");
+     assert.match(app, /\{ayuda && <GuiaUsuarioDialog/);
+   });
+   ```
+
+   When the app produces a file, add one more: the guide's column list equals the backend's layout
+   (import the backend module directly if it's pure — esbuild bundles it into the test).
+3. **Keep the dialog free of `services/api` imports** (it's static): that is what lets
+   `react-dom/server` render it in a plain Node test.
 
 ## Toolbar pattern
 
@@ -768,11 +1036,12 @@ Base class `.badge` (inline-block, pill shape, 11px uppercase):
 
 ```css
 .modal-overlay  /* fixed fullscreen, semi-transparent black bg, z-index 1000 */
-.modal-card     /* white, rounded 12px, max-width 900px, flex column, shadow */
+.modal-card     /* white, rounded 12px, max-width 900px, flex column, shadow,
+                   max-height calc(100dvh - 32px) with a 100vh fallback (iPhone: 100vh hides header/footer) */
 .modal-card-sm  /* max-width 640px variant */
-.modal-header   /* flex space-between, bottom border */
-.modal-body     /* padding 20px, overflow-y auto, flex 1 */
-.modal-footer   /* flex end, gap 8px, top border */
+.modal-header   /* flex space-between, bottom border, flex-shrink 0 */
+.modal-body     /* padding 20px, overflow-y auto, flex 1, min-height 0 */
+.modal-footer   /* flex end, gap 8px, top border, flex-shrink 0 */
 ```
 
 ### Tabs

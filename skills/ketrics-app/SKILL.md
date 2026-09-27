@@ -1,6 +1,6 @@
 ---
 name: ketrics-app
-description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, shared configuration parameters, or deploying to the Ketrics platform.
+description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, shared configuration parameters, the in-app user guide ("guía de uso") every app ships behind an ⓘ header button, or deploying to the Ketrics platform.
 ---
 
 # Ketrics Application Builder
@@ -37,9 +37,13 @@ my-ketrics-app/
 │   ├── vite.config.ts
 │   ├── index.html
 │   └── src/
-│       ├── App.tsx              # Main component
+│       ├── App.tsx              # Main component (header ends with the ⓘ user-guide button)
 │       ├── main.tsx             # React entry point
 │       ├── types.ts             # Shared TypeScript interfaces
+│       ├── components/
+│       │   └── GuiaUsuarioDialog.tsx  # In-app user guide ("Guía de uso") — every app has one
+│       ├── utils/
+│       │   └── guia.ts          # The guide's content (sections, profiles, FAQ), testable without a DOM
 │       ├── services/
 │       │   └── index.ts         # callFunction service layer
 │       └── mocks/
@@ -171,6 +175,14 @@ npm install -D @vitejs/plugin-react vite typescript @types/react @types/react-do
 ```
 
 See [FRONTEND_REFERENCE.md](FRONTEND_REFERENCE.md) for the service layer, auth, and mock handler patterns.
+
+**Every app ships an in-app user guide.** The last element of the header, for every user and in every
+state, is an ⓘ button (`CircleHelp`, `aria-label="Ayuda"`) that opens `GuiaUsuarioDialog`: a modal
+with the user documentation in the users' language — what the app does, the main flow step by step,
+the statuses, the profiles and an FAQ. Build it with the first screen, and keep it true: the app's
+`CLAUDE.md` says the guide changes in the same PR as the flow, formats, roles or audit, and tests tie
+it to the code (profiles = `roles` in the config). Full pattern:
+[FRONTEND_REFERENCE.md → In-app user guide](FRONTEND_REFERENCE.md#in-app-user-guide-guía-de-uso--required).
 
 ### 6. Deploy
 
@@ -532,6 +544,11 @@ const items = result.items.filter((item) => {
 - [ ] Create APIClient service layer with dev/prod branching
 - [ ] Write mock handlers for local development
 - [ ] Define TypeScript interfaces in types.ts
+- [ ] In-app user guide: ⓘ button last in the header (unconditional, aria-label "Ayuda") opening
+      GuiaUsuarioDialog; content in utils/guia.ts; tests tie profiles to config roles and check the
+      button isn't gated; modals fit a phone (100dvh)
+- [ ] The app's CLAUDE.md says: when the flow, a file format, the roles or the audit change, the
+      guide changes in the same PR (and "Adding a handler" ends with "update the guide")
 - [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.14), node-version 24, .npmrc with
       engine-strict=true
 - [ ] Configure environment variables in Ketrics dashboard
