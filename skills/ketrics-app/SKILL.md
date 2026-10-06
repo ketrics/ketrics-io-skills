@@ -176,6 +176,16 @@ npm install -D @vitejs/plugin-react vite typescript @types/react @types/react-do
 
 See [FRONTEND_REFERENCE.md](FRONTEND_REFERENCE.md) for the service layer, auth, and mock handler patterns.
 
+**Modals must fit a phone — this bug has shipped more than once.** On iPhone `100vh` is taller than
+the visible screen and a flex body grows instead of scrolling, so a long modal (guide, import preview,
+audit) hides its own title, ✕ and footer buttons. Every app's `App.css` needs, from the first commit:
+`.modal-card { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); display: flex;
+flex-direction: column }`, `.modal-header` and `.modal-footer { flex-shrink: 0 }`, `.modal-body {
+flex: 1; min-height: 0; overflow-y: auto }`, plus the CSS regression test. **Copying `App.css` from an
+older app brings the bug back** (apps built before this rule lack it) — check those
+declarations whenever styles come from another app, and look at the longest modal on a real phone.
+Details: [FRONTEND_REFERENCE.md → Modals must fit a phone](FRONTEND_REFERENCE.md#modals-must-fit-a-phone--required-css).
+
 **Every app ships an in-app user guide.** The last element of the header, for every user and in every
 state, is an ⓘ button (`CircleHelp`, `aria-label="Ayuda"`) that opens `GuiaUsuarioDialog`: a modal
 with the user documentation in the users' language — what the app does, the main flow step by step,
@@ -546,7 +556,10 @@ const items = result.items.filter((item) => {
 - [ ] Define TypeScript interfaces in types.ts
 - [ ] In-app user guide: ⓘ button last in the header (unconditional, aria-label "Ayuda") opening
       GuiaUsuarioDialog; content in utils/guia.ts; tests tie profiles to config roles and check the
-      button isn't gated; modals fit a phone (100dvh)
+      button isn't gated
+- [ ] Modals fit a phone: .modal-card max-height 100dvh (100vh fallback before it), header/footer
+      flex-shrink 0, body min-height 0 + overflow-y auto; CSS regression test (modal-movil.test.ts);
+      checked on a real phone with the longest modal — never trust App.css copied from an older app
 - [ ] The app's CLAUDE.md says: when the flow, a file format, the roles or the audit change, the
       guide changes in the same PR (and "Adding a handler" ends with "update the guide")
 - [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.14), node-version 24, .npmrc with

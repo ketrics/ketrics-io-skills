@@ -515,19 +515,107 @@ const handleSubmit = async () => {
   }
 };
 
-// In JSX
+// In JSX — header / scrolling body / footer, styled by the classes below (never inline styles)
 {showModal && (
-  <div style={{
-    position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)",
-    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
-  }} onClick={closeModal}>
-    <div style={{ background: "white", padding: 24, borderRadius: 8, minWidth: 400 }}
-         onClick={(e) => e.stopPropagation()}>
-      {/* Form fields and submit button */}
+  <div className="modal-overlay">
+    <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="item-titulo">
+      <div className="modal-header"><h2 id="item-titulo">Nuevo ítem</h2>{/* ✕ button */}</div>
+      <div className="modal-body">{/* Form fields */}</div>
+      <div className="modal-footer">{/* Cancelar / Guardar */}</div>
     </div>
   </div>
 )}
 ```
+
+Real apps wrap this in an accessible `<Modal>` component (focus in, Tab trapped, Escape, focus
+returned to the opener), `components/Modal.tsx`, used by every dialog in the app.
+
+#### Modals must fit a phone — REQUIRED CSS
+
+Users review these apps on their phones. **This bug has shipped more than once:** a long modal (the
+user guide, an import preview, an audit list) shows its body but **its header (title, ✕) and its
+footer (Cerrar / Guardar) are off screen**, so the user can't close it or act. Two causes, both
+needed to break it:
+
+1. On iPhone Safari (and Chrome on iOS) **`100vh` is taller than the visible area** — it ignores the
+   browser's address and tab bars. `max-height: calc(100vh - 32px)` is still taller than the screen.
+2. In a flex column, children default to `flex-shrink: 1` and `min-height: auto`: the body grows with
+   its content instead of scrolling, and squeezes header and footer out.
+
+The fix, in the app's `App.css` — all four declarations, every app, from the first commit:
+
+```css
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 900px;
+  max-height: calc(100vh - 32px);    /* fallback for browsers without dvh */
+  max-height: calc(100dvh - 32px);   /* the VISIBLE viewport on mobile */
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header,
+.modal-footer {
+  flex-shrink: 0;                    /* never squeezed by a long body */
+}
+
+.modal-body {
+  flex: 1;
+  min-height: 0;                     /* lets the body shrink and scroll inside the card */
+  overflow-y: auto;
+}
+```
+
+**How it slips back in:** copying `App.css` from an older sibling app. Apps built before this rule
+have the broken version (plain `100vh`, no `flex-shrink`, no `min-height`), and it looks fine on
+desktop. Whenever you copy styles from another app, check these four declarations instead of
+trusting the source.
+
+**Lock it with a test** — a CSS regression test fails if anyone drops them (`frontend/test/modal-movil.test.ts`):
+
+```typescript
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const css = readFileSync(join(process.cwd(), "src", "App.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const regla = (selector: string): string => {
+  const m = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].find((r) => r[1].trim() === selector);
+  assert.ok(m, `falta la regla ${selector}`);
+  return m[2];
+};
+
+test("la tarjeta usa la altura visible del móvil (dvh), con vh antes como respaldo", () => {
+  const card = regla(".modal-card");
+  const vh = card.indexOf("max-height: calc(100vh");
+  const dvh = card.indexOf("max-height: calc(100dvh");
+  assert.ok(dvh > -1 && vh > -1 && vh < dvh);
+});
+
+test("header y pie no se achican; el cuerpo se desplaza", () => {
+  assert.match(regla(".modal-header"), /flex-shrink: 0;/);
+  assert.match(regla(".modal-footer"), /flex-shrink: 0;/);
+  assert.match(regla(".modal-body"), /min-height: 0;/);
+  assert.match(regla(".modal-body"), /overflow-y: auto;/);
+});
+```
+
+(Keep `.modal-header` and `.modal-footer` as separate rules, or adapt `regla` to grouped selectors.)
+
+**Verify on a phone, not only on desktop:** open the longest modal (the guide) in the remote
+preview (`/run-frontend-dev`) from a phone and check that the title, the ✕ and the footer buttons are
+visible and only the body scrolls. Desktop browsers never show this bug.
 
 ### Confirmation dialog pattern
 
@@ -841,21 +929,11 @@ Tables inside the guide (e.g. a file's columns) get a `<caption>` and `<th scope
 }
 ```
 
-**The modal must fit a phone screen.** On iPhone Safari `100vh` is taller than the visible area
-(it ignores the browser bars), so a `max-height: calc(100vh - 32px)` modal hides its own title and
-footer. Use `dvh` with a `vh` fallback, and keep header and footer from shrinking — this applies to
-every modal, and the guide is the first one long enough to show it:
-
-```css
-.modal-card {
-  max-height: calc(100vh - 32px);
-  max-height: calc(100dvh - 32px);   /* the visible viewport */
-  display: flex;
-  flex-direction: column;
-}
-.modal-header, .modal-footer { flex-shrink: 0; }
-.modal-body { flex: 1; min-height: 0; overflow-y: auto; }
-```
+**The modal must fit a phone screen.** The guide is usually the first modal long enough to expose
+the iPhone `100vh` bug (title and footer off screen). The required CSS, the reason, the regression
+test and how to verify it are in
+[Modals must fit a phone — REQUIRED CSS](#modals-must-fit-a-phone--required-css); don't ship the
+guide without them.
 
 ### Keeping the guide true
 
