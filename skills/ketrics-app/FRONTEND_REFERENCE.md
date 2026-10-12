@@ -420,6 +420,51 @@ Never use `window.open(url, "_blank")` for Volume files — pop-up blockers can 
 
 If you ever see `Framing 'https://ketrics-volumes-...amazonaws.com/' violates the following Content Security Policy directive: "frame-src https://cdn.ketrics.io"` in the browser console, one of the two pieces is missing.
 
+### File upload to a presigned URL
+
+The backend signs the URL with `generateUploadUrl` and returns `{ uploadUrl, uploadHeaders, fileKey }`
+(see [BACKEND_REFERENCE.md → Browser uploads](BACKEND_REFERENCE.md#browser-uploads-generateuploadurl)).
+The browser PUTs the file there, then asks the backend to process `fileKey`:
+
+```typescript
+interface UploadUrlResult {
+  uploadUrl: string;
+  /** The headers the URL was signed with: send them exactly as received. */
+  uploadHeaders: Record<string, string>;
+  fileKey: string;
+}
+
+async function uploadFile(file: File): Promise<string> {
+  const { result } = (await apiClient.run("getUploadUrl", { filename: file.name })) as {
+    result: UploadUrlResult;
+  };
+
+  if (!result.uploadUrl.startsWith("mock://")) {
+    const response = await fetch(result.uploadUrl, {
+      method: "PUT",
+      headers: result.uploadHeaders, // never build these here, not even Content-Type
+      body: file,
+    });
+    // A failed PUT is otherwise silent, and processUpload then fails on a missing file
+    // with a misleading error.
+    if (!response.ok) throw new Error(`Upload failed (HTTP ${response.status}). Try again.`);
+  }
+
+  await apiClient.run("processUpload", { fileKey: result.fileKey });
+  return result.fileKey;
+}
+```
+
+**Send `uploadHeaders` exactly as returned.** The URL is signed with the Content-Type and the
+organization's encryption headers (`x-amz-server-side-encryption`, `…-aws-kms-key-id`,
+`…-bucket-key-enabled`). Leaving one out, adding a different `Content-Type`, or rebuilding the
+headers from a type the frontend knows makes S3 answer **403 `SignatureDoesNotMatch`**, and
+uploads without the tenant key are refused outright. If an upload returns 403, compare the PUT's
+request headers in the browser's Network tab with `uploadHeaders`.
+
+The PUT goes straight to S3, outside the iframe's navigation, so the `frame-src` CSP above doesn't
+apply to it. No `target`/anchor tricks are needed for uploads.
+
 ### Permission-based UI (multiple capabilities)
 
 The `getPermissions` handler reports what the current user **can do**, not which roles they hold.

@@ -127,7 +127,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.17.0 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.18.0 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
@@ -210,8 +210,8 @@ ketrics deploy --env .env
 **Never install the CLI unpinned.** `npm install -g @ketrics/ketrics-cli` on Node older than 24
 silently resolves back to `0.1.0`, which ships a ZIP with no `ketrics.config.json` in it and still
 **reports success** — the app keeps its old actions, roles and variables while CI stays green. In
-CI, pin `@^0.14` (`parameter` and `connection` resources need 0.14.0), set `node-version: 24`,
-and add `.npmrc` with `engine-strict=true`.
+CI, pin `@^0.15` (deploy uploads are encrypted with the organization's own key and need 0.15.0;
+`^0.14` stays below it), set `node-version: 24`, and add `.npmrc` with `engine-strict=true`.
 
 ## Backend file organization
 
@@ -336,7 +336,16 @@ const buffer = await excel.toBuffer();
 const volume = await ketrics.Volume.connect(volumeCode);
 await volume.put(fileKey, buffer);
 const { url } = await volume.generateDownloadUrl(fileKey);
+
+// Browser uploads: return the signed headers with the URL. The PUT must send exactly these.
+const { url: uploadUrl, headers } = await volume.generateUploadUrl(fileKey, { contentType });
+return { uploadUrl, uploadHeaders: headers ?? { "Content-Type": contentType }, fileKey };
 ```
+
+Files are encrypted with the organization's own KMS key, and upload URLs are signed with that
+key's headers: a PUT that doesn't send `uploadHeaders` unchanged fails with
+`SignatureDoesNotMatch`. Full pattern (backend and frontend) in
+[BACKEND_REFERENCE.md → Browser uploads](BACKEND_REFERENCE.md#browser-uploads-generateuploadurl).
 
 ### Messages (notifications)
 
@@ -562,7 +571,10 @@ const items = result.items.filter((item) => {
       checked on a real phone with the longest modal — never trust App.css copied from an older app
 - [ ] The app's CLAUDE.md says: when the flow, a file format, the roles or the audit change, the
       guide changes in the same PR (and "Adding a handler" ends with "update the guide")
-- [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.14), node-version 24, .npmrc with
+- [ ] Browser uploads: getUploadUrl returns generateUploadUrl's headers as uploadHeaders; the
+      frontend PUTs with exactly those headers and checks response.ok; the processing handler
+      only accepts keys under the user's own prefix
+- [ ] Set up GitHub Actions deploy workflow — CLI pinned (@^0.15), node-version 24, .npmrc with
       engine-strict=true
 - [ ] Configure environment variables in Ketrics dashboard
 - [ ] After the first deploy, confirm the app's actions/roles/variables actually changed

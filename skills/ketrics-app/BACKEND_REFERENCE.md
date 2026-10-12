@@ -678,7 +678,9 @@ sheet.columns = columns.map((col) => ({
 
 ## ketrics.Volume
 
-File storage with presigned download URLs.
+File storage with presigned download and upload URLs. Every file is encrypted with the
+organization's own KMS key: `put`, `copy` and `move` set it for you, and upload URLs carry it in
+signed headers (see [Browser uploads](#browser-uploads-generateuploadurl) below).
 
 ```typescript
 // Volume code comes from an environment variable — never a literal.
@@ -710,6 +712,63 @@ function attachmentDisposition(filename: string): string {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 ```
+
+### Browser uploads: `generateUploadUrl`
+
+When the user picks a file in the browser, don't send it through `apiClient.run` (payloads are
+JSON, and large ones fail). Have the backend sign an upload URL, let the browser PUT the file
+straight into the Volume, then call a second handler that reads it.
+
+**The URL is signed with headers, and the PUT must send exactly those headers.** Every Volume
+file is encrypted with the organization's own KMS key, so `generateUploadUrl` signs the
+`Content-Type` and three `x-amz-server-side-encryption*` headers into the URL and returns them as
+`headers`. A PUT that leaves any of them out, or changes one, is rejected by S3 with
+`SignatureDoesNotMatch`, and the bucket refuses uploads that aren't encrypted with the tenant key.
+Return `headers` to the frontend unchanged. Never rebuild them there, not even the Content-Type.
+
+```typescript
+// Step 1 — sign the upload. The key is decided here, never by the browser.
+export const getUploadUrl = async (payload: unknown) => {
+  requirePermission("write");
+  const { filename } = payload as { filename: string };
+  if (!/\.xlsx$/i.test(filename)) throw new Error("Only .xlsx files can be uploaded");
+
+  const contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const fileKey = `imports/${ketrics.requestor.userId}/${Date.now()}-${filename}`;
+  // getImportsVolumeCode(): an IMPORTS_VOLUME accessor in helpers.ts, like getExportsVolumeCode()
+  const volume = await ketrics.Volume.connect(getImportsVolumeCode());
+  const { url, headers } = await volume.generateUploadUrl(fileKey, {
+    contentType,
+    maxSize: 5 * 1024 * 1024, // bytes
+    expiresIn: 600,           // seconds
+  });
+
+  // `headers` = Content-Type + the signed encryption headers. The fallback only covers a
+  // platform without encryption; with it, headers is always present.
+  return { uploadUrl: url, uploadHeaders: headers ?? { "Content-Type": contentType }, fileKey };
+};
+
+// Step 2 — after the browser's PUT succeeded, read and process the file.
+export const processUpload = async (payload: unknown) => {
+  requirePermission("write");
+  const { fileKey } = payload as { fileKey: string };
+  // Only accept keys this user could have been given: never trust a key from the browser.
+  if (!fileKey.startsWith(`imports/${ketrics.requestor.userId}/`) || fileKey.includes("..")) {
+    throw new Error("Invalid file key");
+  }
+  const volume = await ketrics.Volume.connect(getImportsVolumeCode());
+  const { content } = await volume.get(fileKey);
+  // ... parse and store
+};
+```
+
+The frontend half (PUT with `uploadHeaders`, check `response.ok`) is in
+[FRONTEND_REFERENCE.md → File upload to a presigned URL](FRONTEND_REFERENCE.md#file-upload-to-a-presigned-url).
+Mock handlers return `uploadHeaders: { "Content-Type": ... }` with a `mock://` URL. In tests,
+make the fake `generateUploadUrl` return encryption headers too, and assert that every one of
+them reaches `uploadHeaders`.
+
+Requires `@ketrics/sdk-backend` >= 0.18.0 for `PresignedUrl.headers` in the types.
 
 ### Complete export pattern (Excel + Volume)
 
