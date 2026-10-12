@@ -401,7 +401,7 @@ Uses esbuild to bundle the single `backend/src/index.ts` into `backend/dist/inde
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@ketrics/sdk-backend": "0.17.0",
+    "@ketrics/sdk-backend": "0.18.0",
     "@types/node": ">=24.0.0",
     "esbuild": "^0.27.2",
     "typescript": "^5.3.3"
@@ -498,8 +498,12 @@ Common variables to declare for your app:
 > `engines` field still allows old Node, and installs that. The ancient CLI then builds a ZIP with
 > no `ketrics.config.json` in it and **reports a successful deploy**, so the app silently keeps its
 > previous actions, roles and declared variables while CI stays green. Three things together
-> prevent it: `node-version: 24`, a version range (`@^0.14`), and an `.npmrc` with
+> prevent it: `node-version: 24`, a version range (`@^0.15`), and an `.npmrc` with
 > `engine-strict=true` so an engine mismatch becomes an error instead of a silent downgrade.
+>
+> **The range must reach 0.15.** Deploy uploads are encrypted with the organization's own KMS key,
+> and a CLI older than 0.15.0 doesn't send the signed encryption headers, so its deploy fails. For a
+> 0.x version `^0.14` means `>=0.14.0 <0.15.0`, so it never picks 0.15 up: bump the pin.
 
 ### `.npmrc` (repository root)
 
@@ -537,7 +541,8 @@ jobs:
           node-version: 24
 
       # Install Ketrics CLI — ALWAYS pin. Unpinned silently installs 0.1.0 on old Node.
-      - run: npm install -g @ketrics/ketrics-cli@^0.14
+      # 0.15.0 or newer: deploy uploads are encrypted with the tenant's own KMS key.
+      - run: npm install -g @ketrics/ketrics-cli@^0.15
 
       # Generate .env file (only KETRICS_TOKEN is a secret)
       - name: Generate .env file
@@ -614,9 +619,9 @@ ketrics deploy --env .env
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@ketrics/sdk-backend` | 0.17.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0 |
+| `@ketrics/sdk-backend` | 0.18.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0; `PresignedUrl.headers` (upload URLs) needs >= 0.18.0 |
 | `@ketrics/sdk-frontend` | ^0.3.0 | Frontend auth manager (dependency) |
-| `@ketrics/ketrics-cli` | `^0.14` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24. `parameter` and `connection` resources need >= 0.14.0; an older CLI rejects the config |
+| `@ketrics/ketrics-cli` | `^0.15` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24. Deploys need >= 0.15.0 (uploads encrypted with the tenant's key); `parameter` and `connection` resources need >= 0.14.0 |
 
 ## Deployment checklist
 
@@ -645,7 +650,8 @@ ketrics deploy --env .env
 - [ ] Environment variable values filled in the Ketrics dashboard after first deploy
 - [ ] KETRICS_TOKEN secret set in GitHub repo settings
 - [ ] GitHub Actions workflow file in .github/workflows/deploy.yml
-- [ ] Workflow pins the CLI (@^0.14 — parameter/connection resources need 0.14.0), uses node-version 24, and the repo has .npmrc with engine-strict=true
+- [ ] Workflow pins the CLI (@^0.15 — deploys need 0.15.0; ^0.14 never reaches it), uses node-version 24, and the repo has .npmrc with engine-strict=true
+- [ ] Every browser upload PUTs with the uploadHeaders its getUploadUrl handler returned (Content-Type + encryption headers), unchanged
 - [ ] After deploying, confirm the app's actions/roles/variables actually changed — a 0.1.0 CLI
       reports success while shipping a ZIP with no config in it
 ```
