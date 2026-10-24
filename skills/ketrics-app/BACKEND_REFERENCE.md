@@ -793,7 +793,7 @@ them reaches `uploadHeaders`.
 
 Requires `@ketrics/sdk-backend` >= 0.18.0 for `PresignedUrl.headers` in the types.
 
-**Size and type limits are enforced after the upload.** The PUT still answers 200, but when the file is larger than `maxSize` or the volume's `maxFileSize`, the platform deletes it within seconds, and the browser must send every header in `headers`, including `x-amz-meta-ketrics-max-size` when `maxSize` is set. Validate `file.size` in the browser before uploading, and confirm from the backend with `getMetadata` or `exists`. `generateUploadUrl` throws `ContentTypeNotAllowedError` for a disallowed extension.
+**Upload limits.** `generateUploadUrl` throws `ContentTypeNotAllowedError` when the key's extension is not allowed by the volume. Size is enforced after the upload: the PUT still answers 200, but a file larger than `maxSize` or the volume's `maxFileSize` is deleted within seconds. The browser must send every header in `headers`, including `x-amz-meta-ketrics-max-size` when `maxSize` is set. Validate `file.size` in the browser before uploading, and confirm from the backend with `getMetadata` or `exists`.
 
 ### Complete export pattern (Excel + Volume)
 
