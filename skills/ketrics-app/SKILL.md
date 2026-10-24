@@ -129,7 +129,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.19.0 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.19.1 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
