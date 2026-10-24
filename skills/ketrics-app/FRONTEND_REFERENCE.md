@@ -58,7 +58,9 @@ async function createClient(): Promise<APIClientInterface> {
   }
 
   const auth = createAuthManager();
-  auth.initAutoRefresh({ refreshBuffer: 60, onTokenUpdated: () => {} });
+  // Await it: since sdk-frontend 0.5.0 the token arrives by postMessage and getAccessToken()
+  // is null until this resolves. It rejects if the parent never answers (refreshTimeout).
+  await auth.initAutoRefresh({ refreshBuffer: 60, onTokenUpdated: () => {} });
   return new APIClient(auth);
 }
 
@@ -102,7 +104,7 @@ export function createMockClient() {
 
 - `import.meta.env.DEV` — Vite's built-in env flag for dev mode detection
 - `createAuthManager()` — Returns an auth manager that handles JWT tokens in the iframe context
-- `auth.initAutoRefresh()` — Keeps the token fresh; `refreshBuffer: 60` means refresh 60s before expiry
+- `await auth.initAutoRefresh()` — Keeps the token fresh; `refreshBuffer: 60` means refresh 60s before expiry. **Always await it** (sdk-frontend >= 0.5.0): the token lives in memory and arrives by postMessage, so `getAccessToken()` is `null` until it resolves, and it rejects if the parent does not answer within `refreshTimeout` (default 5000 ms). Optional `onRefreshError` receives later refresh failures
 - Dynamic import of mock client keeps mock code out of production builds
 - Handler names must match exactly between `apiClient.run("handlerName", ...)` and `backend/src/index.ts` exports
 
@@ -283,7 +285,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ketrics/sdk-frontend": "^0.3.0",
+    "@ketrics/sdk-frontend": "^0.5.0",
     "lucide-react": "^0.400.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"

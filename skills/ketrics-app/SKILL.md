@@ -1,6 +1,6 @@
 ---
 name: ketrics-app
-description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, Volume file storage, messaging, comments, environment variables, shared configuration parameters, the in-app user guide ("guía de uso") every app ships behind an ⓘ header button, or deploying to the Ketrics platform.
+description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, PDF generation, AI chat, Volume file storage, messaging, comments, environment variables, shared configuration parameters, the in-app user guide ("guía de uso") every app ships behind an ⓘ header button, or deploying to the Ketrics platform.
 ---
 
 # Ketrics Application Builder
@@ -120,6 +120,8 @@ version:
   application role, so declaring a resource is what gives the app access to it
 - `environment` declares every other variable the app reads. The legacy key `environmentVariables`
   now **fails the deploy**
+- `include` is required (the CLI rejects a config without it); `menu` / `submenu` (optional) seed the
+  launcher placement. See [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md)
 
 ### 3. Set up the backend
 
@@ -127,7 +129,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.18.0 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.19.0 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
@@ -410,11 +412,16 @@ await ketrics.http.put(`https://api.example.com/users/${userId}`, { name, email 
 await ketrics.http.delete(`https://api.example.com/users/${userId}`, { headers });
 ```
 
-### Application context
+### Also available
 
-```typescript
-ketrics.application.id; // Application UUID
-```
+`ketrics.AI.chat` (Anthropic models, `*-5.5` aliases), `ketrics.Pdf` (read/create/edit), `Excel.read` /
+`toCsv`, `Messages.sendToGroup`, `Job.getStatus` / `Job.list`, `http.patch`, and the context objects
+`ketrics.tenant`, `ketrics.application` (`id`, `code`, `name`, `version?`, `deploymentId`) and
+`ketrics.runtime`. Details and examples: [BACKEND_REFERENCE.md](BACKEND_REFERENCE.md).
+
+Failures **throw** typed errors (`ketrics.<Module>.NotFoundError`, ...), never return `{ success: false }`.
+Handlers run in a sandbox: **30 s per call, no `require`, `process`, `fetch` or `eval`** — use
+`ketrics.http`, and a background job for longer work. `ketrics.http` refuses private addresses.
 
 ## Common patterns
 

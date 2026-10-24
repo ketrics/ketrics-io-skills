@@ -209,7 +209,12 @@ ketrics.requestor.userId; // string — User ID
 ketrics.requestor.name; // string — Display name
 ketrics.requestor.email; // string — Email address
 ketrics.requestor.applicationPermissions; // string[] — granted capabilities, e.g. ["read", "write"] (or ["*"])
+ketrics.requestor.type; // "USER" | "SERVICE_ACCOUNT"
+ketrics.requestor.isCrossApp; // true when reached through ketrics.Applications...invoke()
+ketrics.requestor.sourceApplicationCode; // calling app's code, only when isCrossApp
 ```
+
+`userId` and `email` exist **only when `type` is `"USER"`**, so both are optional in the types (use `ketrics.requestor.userId!` only in handlers a user always calls). A service account carries `serviceAccountId` and `serviceAccountCode` instead. A handler that stores or compares an owner must decide what a service account (or a cross-app call) means: reject it, or key it by `serviceAccountId`.
 
 `applicationPermissions` holds the **capabilities** the requestor was granted through their roles — the same codes declared in `actions` in `ketrics.config.json` — or `["*"]` for full access. Check against a capability, never against a role code.
 
@@ -328,6 +333,10 @@ const result = await db.query<Record<string, unknown>>(limitedSql, params);
 | ---------------------- | ------------------- | --------------------------------- |
 | **PostgreSQL**         | `$1`, `$2`, `$3`... | `WHERE status = $1 AND role = $2` |
 | **MSSQL (SQL Server)** | `?`                 | `WHERE status = ? AND role = ?`   |
+| **MySQL**              | `?`                 | `WHERE status = ? AND role = ?`   |
+| **Oracle**             | `?`                 | `WHERE status = ? AND role = ?`   |
+
+Oracle takes `?` too: the driver rewrites each one to a named bind (`:p0`, `:p1`...), so never write `:name` yourself.
 
 For **PostgreSQL** connections:
 
@@ -666,6 +675,20 @@ sheet.addRows(data.map((row) => [row.name, row.email, row.status]));
 const buffer = await excel.toBuffer();
 ```
 
+### Read and convert an existing workbook
+
+```typescript
+const wb = await ketrics.Excel.read(buffer); // a Buffer, e.g. read from a Volume
+const ws = wb.getWorksheet("Sheet1") ?? wb.worksheets[0]; // by name or index; undefined if missing
+const rows = ws.getSheetValues(); // ExcelCellValue[][]
+ws.eachRow((row, n) => console.log(n, row.values));
+ws.getCell("B2").value; // also getCell(row, col)
+ws.mergeCells("A1", "C1"); // or (startRow, startCol, endRow, endCol); unMergeCells to undo
+const csv = await wb.toCsv("Sheet1"); // worksheet name optional
+```
+
+Also `addRow`, `insertRow(s)`, `spliceRows`, `getRow(s)`, `wb.removeWorksheet`, and `addWorksheet(name, { tabColor, defaultRowHeight, defaultColWidth })`. A file that can't be parsed throws `ketrics.Excel.ParseError`; one that can't be written throws `ketrics.Excel.WriteError`. Excel runs inside the sandbox worker, not over RPC.
+
 ### Dynamic column widths
 
 ```typescript
@@ -835,6 +858,24 @@ await ketrics.Messages.send({
 
 Use `send()` for targeted notifications (e.g., background job completion). Use `sendBulk()` for multi-user notifications.
 
+### Send to a group
+
+```typescript
+const out = await ketrics.Messages.sendToGroup({
+  groupCode: "finance-team",
+  type: "TEAM_UPDATE",
+  subject: "Close starts tomorrow",
+  body: "Details...",
+});
+// out: { total, sent, failed, results: [{ messageId, userId, status: "sent" | "failed", error? }] }
+```
+
+`sendToGroup` needs the **application role to hold `iam:GetGroupData` and `iam:GetMembershipData`**; without them it throws `ketrics.Messages.PermissionDeniedError`, and an unknown group throws `GroupNotFoundError`. `send`/`sendBulk` need no grant (the user ids are explicit).
+
+### Options (all three methods)
+
+`subject` max 200 characters, `body` max 10,000 (markdown). Optional: `priority` (`"LOW" | "MEDIUM" | "HIGH"`, default MEDIUM), `channels: { inbox?, push? }` (inbox is always on; `push: true` also alerts), `actionUrl` (deep link), `data` (custom `Record<string, unknown>` for the app), `expiresAt` (ISO timestamp). Bad input throws `ketrics.Messages.ValidationError`. `sendBulk` and `sendToGroup` do not throw for individual recipients: check `failed` and each `results[i].error`.
+
 ### Notification on share pattern
 
 ```typescript
@@ -874,6 +915,12 @@ const users = tenantUsers.map((user) => ({
 
 ```typescript
 ketrics.application.id; // Application UUID, useful for namespacing Volume file keys
+ketrics.application.code; // string
+ketrics.application.name; // string
+ketrics.application.version; // string | undefined
+ketrics.application.deploymentId; // current deployment
+ketrics.tenant; // { id, code, name }
+ketrics.runtime; // { nodeVersion, runtime: "ecs-fargate", region }
 ```
 
 ## ketrics.console
@@ -988,6 +1035,25 @@ const jobId = await ketrics.Job.runInBackground({
 });
 ```
 
+Optional `options`: `timeout` in ms (default 300000 = 5 min, max 900000 = 15 min) and `idempotencyKey` (a repeat call with the same key returns the existing job id instead of queuing a second job):
+
+```typescript
+const jobId = await ketrics.Job.runInBackground({
+  function: "_buildReport",
+  payload: { year },
+  options: { timeout: 600000, idempotencyKey: `report-${year}` },
+});
+
+const st = await ketrics.Job.getStatus(jobId); // throws ketrics.Job.NotFoundError for an unknown id
+// st.status: "pending" | "running" | "completed" | "failed"; also createdAt, startedAt?, completedAt?
+// st.error?: { code: "TIMEOUT" | "RUNTIME_ERROR" | "FUNCTION_NOT_FOUND", message }
+
+const page = await ketrics.Job.list({ status: "failed", limit: 20 }); // limit default 20, max 100
+// page.jobs: JobStatus[]; pass page.cursor back as { cursor } for the next page
+```
+
+A function name that isn't exported throws `ketrics.Job.InvalidFunctionError`.
+
 ### Background handler naming convention
 
 Prefix background handler names with `_` (e.g., `_syncCreateRecord`). These handlers are invoked by the platform, not the frontend. They **must** be exported from `backend/src/index.ts` and listed in `ketrics.config.json` `functions`.
@@ -1089,22 +1155,28 @@ import { ApplicationInvokeResult } from "@ketrics/sdk-backend";
 const appCode = ketrics.environment["OTHER_APP_CODE"];
 const app = await ketrics.Applications.connect(appCode);
 
-const result: ApplicationInvokeResult<ResponseType> = await app.invoke<PayloadType, ResponseType>("handlerName", payload);
-
-if (result.success) {
-  // result.result contains the typed response
-  const data = result.result;
-} else {
-  // Handle failure — extract error from result
-  const errorMsg = (result as any).error?.message || "Unknown error";
+try {
+  const result: ApplicationInvokeResult<ResponseType> = await app.invoke<PayloadType, ResponseType>("handlerName", payload);
+  const data = result.result; // success is always true here; result.executionTime is in ms
+} catch (err) {
+  // Failures throw; invoke never returns success: false
+  if (err instanceof ketrics.Applications.TimeoutError) {
+    // exceeded the invoke timeout (30 s, or less if the caller's own deadline is nearer)
+  } else if (err instanceof ketrics.Applications.PermissionDeniedError) {
+    // the requestor lacks application:InvokeFunction on that function
+  } else if (err instanceof ketrics.Applications.InvocationError) {
+    // the target function threw
+  }
 }
 ```
+
+`connect` throws `ketrics.Applications.NotFoundError` or `NotDeployedError`, and exposes `app.code`, `app.name` and `app.applicationId`. Permission is checked per function, through the requestor's roles. In the target the call arrives with `ketrics.requestor.isCrossApp === true` and `sourceApplicationCode` set.
 
 Store app codes in environment variables so they can be configured per-tenant without code changes.
 
 ## ketrics.http
 
-HTTP client for making external API requests. Supports `get`, `post`, `put`, and `delete` methods.
+HTTP client for making external API requests. Supports `get`, `post`, `put`, `patch`, and `delete` methods.
 
 ### GET — Fetch a resource
 
@@ -1264,11 +1336,93 @@ response.headers; // Record<string, string> — Response headers
 
 ```typescript
 {
-  params?: Record<string, unknown>;   // Query string parameters
+  params?: Record<string, string | number | boolean>;   // Query string parameters
   headers?: Record<string, string>;   // Request headers
   timeout?: number;                   // Timeout in ms (default: 30000)
+  maxRedirects?: number;              // Redirects to follow (default: 5)
 }
 ```
+
+Non-2xx statuses do **not** throw: check `response.status`. The client sends `User-Agent: Ketrics-RuntimeApi/1.0`, and `await ketrics.http.patch(url, body, { headers })` works like `put`.
+
+**SSRF guard:** requests to private, loopback, link-local or otherwise reserved addresses (including the cloud metadata endpoint) are refused, by IP literal or by DNS answer, and so is a redirect that lands on one; the error's `name` is `SsrfBlockedError`. An app can only call public hosts: reaching an internal system takes a `connection` resource, not `ketrics.http`.
+
+## ketrics.AI
+
+Chat completions with Anthropic models (AWS Bedrock). Requires `@ketrics/sdk-backend` >= 0.19.0 for the `*-5.5` aliases in the types.
+
+```typescript
+const res = await ketrics.AI.chat({
+  model: ketrics.AI.Models.SONNET_5_5, // default "haiku"
+  systemPrompt: "Answer in one sentence.",
+  messages: [{ role: "user", content: question }],
+  maxTokens: 512, // default 1024, max 4096
+});
+res.content; // the reply text
+res.usage; // { inputTokens, outputTokens }
+res.model; // alias used
+res.stopReason; // string
+```
+
+Aliases (`ketrics.AI.Models`): `haiku`, `sonnet`, `sonnet-4.5`, `opus`, `haiku-5.5`, `sonnet-5.5`, `opus-5.5`; any other value throws `InvalidRequestError`. `chat` is stateless: send the whole conversation each call, alternating `user`/`assistant`.
+
+- **Limits:** at most 20 messages of 50,000 characters each, `systemPrompt` up to 10,000 characters, non-empty `content`. `temperature` (0-1, default 0.7) is **ignored by the `*-5.5` aliases**, which reject sampling parameters.
+- **Access:** the tenant plan must include AI, the app's role must grant `ai:InvokeModel` for the alias (resource `ai:<alias>`), the tenant may restrict which aliases are allowed, calls are rate limited per plan, and tokens count against a monthly tenant quota.
+- **Errors** (`ketrics.AI.*`): `FeatureDisabledError`, `AccessDeniedError` (`.model`), `RateLimitError` (`.retryAfter`), `QuotaExceededError` (`.limit`, `.remaining`), `InvalidRequestError`, `ModelError`. Show the user a plain message for the first four; never retry `QuotaExceededError`.
+
+## ketrics.Pdf
+
+Read, create and edit PDFs in memory (runs inside the sandbox worker, like Excel).
+
+```typescript
+const pdf = await ketrics.Pdf.create(); // or await ketrics.Pdf.read(buffer)
+pdf.setTitle("Invoice 42");
+const page = pdf.addPage("A4"); // "A4" | "Letter" | "Legal" | "Tabloid" | "A3" | "A5" | [w, h]
+const bold = await pdf.embedStandardFont("HelveticaBold");
+await page.drawText("Invoice 42", { x: 50, y: page.height - 60, size: 20, font: bold, color: ketrics.Pdf.rgb(0, 0, 0) });
+page.drawRectangle({ x: 50, y: 600, width: 200, height: 1, color: ketrics.Pdf.rgb(0.5, 0.5, 0.5) });
+const logo = await pdf.embedPng(pngBuffer); // embedJpg, embedFont (custom) too
+page.drawImage(logo, { x: 50, y: 700, ...logo.scaleToFit(120, 60) });
+const buffer = await pdf.toBuffer(); // then volume.put(key, buffer)
+```
+
+Coordinates are points from the bottom-left; colors are `rgb` values 0-1. `drawText` is async (`await` it); `drawRectangle`, `drawLine`, `drawCircle`, `drawImage` are sync. Pages: `getPage(i)`, `getPages()`, `getPageCount()`, `insertPage`, `removePage`, `copyPages(otherDoc, [indices])` (returns pages to insert). Metadata: `set/getTitle|Author|Subject|Keywords|Creator|Producer`. Input over 50 MB is refused. Errors: `ketrics.Pdf.ParseError`, `ketrics.Pdf.WriteError`.
+
+## Error classes
+
+Every module groups its errors under its namespace, and each has `isError(err)` and `isErrorType(err, Class)` guards. Failures **throw**; branch on the class, not on message text.
+
+| Module | Classes (all under `ketrics.<Module>.`) |
+| --- | --- |
+| `Volume` | `NotFoundError`, `AccessDeniedError`, `PermissionDeniedError`, `FileNotFoundError`, `FileAlreadyExistsError`, `InvalidPathError`, `FileSizeLimitError`, `ContentTypeNotAllowedError` |
+| `Database` | `NotFoundError`, `AccessDeniedError`, `ConnectionError`, `QueryError`, `TransactionError` |
+| `DocumentDb` | `NotFoundError`, `AccessDeniedError`, `PermissionDeniedError`, `ValidationError`, `OperationError` |
+| `Secret` / `Parameter` | `NotFoundError`, `AccessDeniedError`, plus `DecryptionError`, `PayloadTooLargeError`, `ReservedContextKeyError` (Secret) and `InvalidJsonError` (Parameter) |
+| `Messages` | `ValidationError`, `GroupNotFoundError`, `PermissionDeniedError` |
+| `Job` | `NotFoundError`, `InvalidFunctionError`, `ExecutionError` |
+| `Excel` / `Pdf` | `ParseError`, `WriteError` |
+| `Users` | `PermissionDeniedError` |
+| `Applications` | `NotFoundError`, `NotDeployedError`, `PermissionDeniedError`, `InvocationError`, `TimeoutError` |
+| `AI` | `FeatureDisabledError`, `AccessDeniedError`, `RateLimitError`, `QuotaExceededError`, `InvalidRequestError`, `ModelError` |
+
+```typescript
+try {
+  await ketrics.Job.getStatus(jobId);
+} catch (err) {
+  if (ketrics.Job.isErrorType(err, ketrics.Job.NotFoundError)) return { status: "unknown" };
+  throw err;
+}
+```
+
+`PermissionDeniedError` means the application role lacks a grant for that resource: fix the role, not the code.
+
+## Sandbox and limits
+
+Handlers run in an isolated VM context. Available globals: `ketrics`, `console`, `module`, `exports`, `Buffer`, `URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `crypto` (`randomUUID`, `subtle`, `getRandomValues`), `setTimeout`/`setInterval`/`setImmediate` (and their `clear*`), `queueMicrotask`.
+
+- **Not available:** `require`, `process`, `fetch`, `eval`, `new Function`, any Node API. Bundle pure-JS libraries with esbuild; use `ketrics.http` for network calls.
+- **30 s per call** by default (a cross-app `invoke` shares the caller's deadline). Longer work belongs in `ketrics.Job.runInBackground` (up to 15 min).
+- `ketrics.console` is the logger (CloudWatch, with tenant and app context); the global `console` is also wired to it.
 
 ## DocumentDB type casting pattern
 
