@@ -89,13 +89,14 @@ The `documentdb`, `volume`, `parameter` and `connection` entries above declare n
 | `name` | Yes | Application identifier (lowercase, hyphens) |
 | `version` | Yes | Semver version string |
 | `description` | No | Human-readable description |
-| `runtime` | Yes | Runtime environment. Use `"nodejs18"` |
+| `runtime` | No | `nodejs18` (default), `nodejs20` or `static`; the platform ignores it, keep `nodejs18` |
 | `actions` | Yes | The **capabilities** the app enforces (e.g. `read`, `write`, `export`, `approve`). Each entry is a bare string or `{ code, description }`. On deploy these **become the app's "Supported Actions"**. Max 50 |
 | `functions` | No | Handler function names. SHOULD match the exports in `backend/src/index.ts`. Stored as metadata |
 | `roles` | No | Application roles to create, as `{ code, name, description?, actions }`. Every action listed must be declared in `actions`. Max 20 |
 | `environment` | No | Env vars the app needs, as `{ name, description }`. Missing ones are created (empty) on deploy. Max 50 |
+| `menu`, `submenu` | No | Launcher placement, 1-50 characters each. **Seeded, not synced**: applied only while the application has no value, so a tenant admin's categorisation survives every redeploy |
 | `entry` | Yes | Path to the built backend bundle (relative to `backend/`) |
-| `include` | No | Glob patterns for files to include in deployment |
+| `include` | Yes | Glob patterns for files to include in deployment (at least one; the CLI rejects a config without it) |
 | `exclude` | No | Glob patterns for files to exclude |
 | `resources` | No | Declares the DocumentDB, Volume, Secret, Parameter and Connection resources the app uses. Each binds to an environment variable, declared or derived (see below) |
 
@@ -109,7 +110,7 @@ On `ketrics deploy` the CLI bundles `ketrics.config.json` into the deployment ZI
 - **`resources`** are persisted with every binding resolved — the platform fills in each entry's `environmentVariable`, deriving it when the config omitted one, so nothing downstream re-derives it.
 - **`functions`** are stored as metadata.
 
-The outcome is recorded on the deployment itself, so a sync that fails is visible rather than silent; a failed sync does not fail the deployment.
+The outcome is recorded on the deployment itself as `configSync` (`applied`, `skipped` or `failed`, with counts per kind and an `error` message when it failed), so a sync that fails is visible rather than silent; a failed sync does not fail the deployment. A deploy whose ZIP has no config is `skipped` (`no-config`) — the same silent failure as an old CLI.
 
 ### `actions` are capabilities, not roles and not handlers
 
@@ -401,7 +402,7 @@ Uses esbuild to bundle the single `backend/src/index.ts` into `backend/dist/inde
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@ketrics/sdk-backend": "0.18.0",
+    "@ketrics/sdk-backend": "0.19.0",
     "@types/node": ">=24.0.0",
     "esbuild": "^0.27.2",
     "typescript": "^5.3.3"
@@ -519,7 +520,7 @@ name: Deploy to Ketrics
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'backend/**'
       - 'frontend/**'
@@ -615,12 +616,26 @@ cd frontend && npm run build && cd ..
 ketrics deploy --env .env
 ```
 
+### CLI commands
+
+| Command | Does |
+|---|---|
+| `ketrics create <app-name> [-t template]` | New app from a template (Blank, HelloWorld...), including `CLAUDE.md`, `.claude/` and `tests/` |
+| `ketrics validate [-c config] [-e .env]` | Checks `ketrics.config.json` and the `.env` without building; run it before every deploy |
+| `ketrics build` | Builds frontend and backend only |
+| `ketrics deploy [-e .env] [--dry-run]` | Build and deploy; `--dry-run` shows what would upload |
+| `ketrics run tests/test.<fn>.json [-e .env] [-v]` | Sends the request in a JSON file (`endpoint`, `method`, `headers`, `body.payload`, with `{{tenantId}}`, `{{applicationId}}`, `{{token}}` filled from the `.env`) to call one deployed function; needs `KETRICS_AUTH_TOKEN` (a user access token) and `KETRICS_RUNTIME_URL` in the `.env`; the templates ship one `tests/test.*.json` per handler |
+| `ketrics skills [--project]` | Installs this skill into `~/.claude/skills` (or `./.claude/skills`) |
+| `ketrics update [--check]` | Updates the CLI |
+
+Templates also ship `.claude/agents/ketrics-implementer.md` (a sub-agent that implements one lane of a spec issue in its own worktree and never edits `ketrics.config.json`) and `.claude/settings.json` (an allowlist for build/typecheck/git read commands; `ketrics deploy`, `git push` and `gh pr merge` ask first; `.env` files are denied). Keep both when adapting a template.
+
 ## SDK versions
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@ketrics/sdk-backend` | 0.18.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0; `PresignedUrl.headers` (upload URLs) needs >= 0.18.0 |
-| `@ketrics/sdk-frontend` | ^0.3.0 | Frontend auth manager (dependency) |
+| `@ketrics/sdk-backend` | 0.19.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0; `PresignedUrl.headers` (upload URLs) needs >= 0.18.0; the `*-5.5` AI aliases need >= 0.19.0 |
+| `@ketrics/sdk-frontend` | ^0.5.0 | Frontend auth manager (dependency) |
 | `@ketrics/ketrics-cli` | `^0.15` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24. Deploys need >= 0.15.0 (uploads encrypted with the tenant's key); `parameter` and `connection` resources need >= 0.14.0 |
 
 ## Deployment checklist
