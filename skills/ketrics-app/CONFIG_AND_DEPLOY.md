@@ -402,7 +402,7 @@ Uses esbuild to bundle the single `backend/src/index.ts` into `backend/dist/inde
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@ketrics/sdk-backend": "0.19.0",
+    "@ketrics/sdk-backend": "0.19.1",
     "@types/node": ">=24.0.0",
     "esbuild": "^0.27.2",
     "typescript": "^5.3.3"
@@ -634,7 +634,7 @@ Templates also ship `.claude/agents/ketrics-implementer.md` (a sub-agent that im
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@ketrics/sdk-backend` | 0.19.0 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0; `PresignedUrl.headers` (upload URLs) needs >= 0.18.0; the `*-5.5` AI aliases need >= 0.19.0 |
+| `@ketrics/sdk-backend` | 0.19.1 | Backend global types (devDependency). `ketrics.Parameter` needs >= 0.17.0; `PresignedUrl.headers` (upload URLs) needs >= 0.18.0; the `*-5.5` AI aliases need >= 0.19.0 |
 | `@ketrics/sdk-frontend` | ^0.5.0 | Frontend auth manager (dependency) |
 | `@ketrics/ketrics-cli` | `^0.15` in CI, `@latest` by hand | CLI for deployment. **Never install unpinned** — see the warning above. Requires Node >= 24. Deploys need >= 0.15.0 (uploads encrypted with the tenant's key); `parameter` and `connection` resources need >= 0.14.0 |
 
