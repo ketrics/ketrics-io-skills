@@ -1349,7 +1349,7 @@ Non-2xx statuses do **not** throw: check `response.status`. The client sends `Us
 
 ## ketrics.AI
 
-Chat completions with Anthropic models (AWS Bedrock). Requires `@ketrics/sdk-backend` >= 0.19.0 for the `*-5.5` aliases in the types.
+Chat completions with Anthropic models (AWS Bedrock). Requires `@ketrics/sdk-backend` >= 0.19.0 for the `*-5.5` aliases in the types, and >= 0.20.0 for [file blocks](#files-as-context).
 
 ```typescript
 const res = await ketrics.AI.chat({
@@ -1364,11 +1364,64 @@ res.model; // alias used
 res.stopReason; // string
 ```
 
-Aliases (`ketrics.AI.Models`): `haiku`, `sonnet`, `sonnet-4.5`, `opus`, `haiku-5.5`, `sonnet-5.5`, `opus-5.5`; any other value throws `InvalidRequestError`. `chat` is stateless: send the whole conversation each call, alternating `user`/`assistant`.
+Aliases (`ketrics.AI.Models`): `haiku` (`HAIKU`), `sonnet` (`SONNET`), `opus` (`OPUS`), `haiku-5.5` (`HAIKU_5_5`), `sonnet-5.5` (`SONNET_5_5`), `opus-5.5` (`OPUS_5_5`); any other value throws `InvalidRequestError` (`sonnet-4.5` was removed in 0.20.0). `chat` is stateless: send the whole conversation each call, alternating `user`/`assistant`.
 
-- **Limits:** at most 20 messages of 50,000 characters each, `systemPrompt` up to 10,000 characters, non-empty `content`. `temperature` (0-1, default 0.7) is **ignored by the `*-5.5` aliases**, which reject sampling parameters.
-- **Access:** the tenant plan must include AI, the app's role must grant `ai:InvokeModel` for the alias (resource `ai:<alias>`), the tenant may restrict which aliases are allowed, calls are rate limited per plan, and tokens count against a monthly tenant quota.
-- **Errors** (`ketrics.AI.*`): `FeatureDisabledError`, `AccessDeniedError` (`.model`), `RateLimitError` (`.retryAfter`), `QuotaExceededError` (`.limit`, `.remaining`), `InvalidRequestError`, `ModelError`. Show the user a plain message for the first four; never retry `QuotaExceededError`.
+- **Limits:** at most 20 messages; text `content` non-empty and at most 50,000 characters; `systemPrompt` up to 10,000 characters. `temperature` (0-1, default 0.7) is **ignored by the `*-5.5` aliases**, which reject sampling parameters. On the `*-5.5` aliases thinking counts toward `maxTokens`: leave headroom, a reply cut short ends with `stopReason: "max_tokens"`.
+- **Access:** the tenant plan must include AI, the app's role must grant `ai:InvokeModel` for the alias (resource `ai:<alias>`), the tenant may restrict which aliases are allowed, calls are rate limited per plan, and tokens count against a monthly tenant quota. The call counts toward the handler's execution timeout.
+- **Errors** (`ketrics.AI.*`): `FeatureDisabledError`, `AccessDeniedError` (`.model`), `RateLimitError` (`.retryAfter`), `QuotaExceededError` (`.limit`, `.remaining`), `InvalidRequestError` (`.reason`, `.code`), `ModelError`. Show the user a plain message for the first four; never retry `QuotaExceededError`.
+
+### Files as context
+
+A `user` message can carry PDFs and images next to text: give `content` an array of blocks instead of a string. The model reads the file itself; there is no text extraction step.
+
+| Block | Shape | Use for |
+| --- | --- | --- |
+| Text | `{ type: "text", text }` | The question or instructions |
+| Volume file | `{ type: "file", volume, key, name? }` | A file already in a Volume. **Prefer this:** the platform reads it, so the bytes never cross the sandbox |
+| Bytes | `{ type: "file", data, name? }` | A file the app holds in memory (a generated PDF, an `http` download); `data` is a `Buffer` or `Uint8Array` |
+
+```typescript
+export const draftReply = async (payload: { fileKey?: string; instructions?: string }) => {
+  const fileKey = String(payload?.fileKey ?? "");
+  // The platform checks the APP's Volume access, not the end user's: check the user may use this file.
+  if (!fileKey.startsWith(`oficios/${ketrics.requestor.userId}/`)) {
+    throw new Error("Invalid file.");
+  }
+  const res = await ketrics.AI.chat({
+    model: ketrics.AI.Models.SONNET_5_5,
+    systemPrompt: SYSTEM_PROMPT,
+    maxTokens: 4096,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "file", volume: "files", key: fileKey, name: "Oficio" },
+          { type: "text", text: payload?.instructions || "Draft a reply to this document." },
+        ],
+      },
+    ],
+  });
+  return { draft: res.content };
+};
+```
+
+- **Formats:** PDF (digital and scanned), PNG, JPEG, GIF, WebP, detected from the bytes (never from the name). File blocks only in `user` messages; plain-string `content` works as before.
+- **Limits:** 10 MiB per file; 5 files and 12 MiB per call; 50 PDF pages per call; images up to 3,932,160 bytes (sent unchanged, never re-encoded); encrypted PDFs refused; the whole request at most 19.5 MB.
+- **Cost:** files use input tokens from the monthly quota: about 2,700-3,050 tokens per dense text page, about 1,600 per scanned page, `ceil(w/28) * ceil(h/28)` per image. A call whose estimate exceeds the remaining monthly tokens throws `QuotaExceededError` before the model is called.
+- **Permissions:** a Volume file also needs `volume:GetObject` on that volume in the app's role, on top of `ai:InvokeModel`. Missing objects or grants throw the usual `ketrics.Volume.*` errors.
+- **Reading quality:** small or stylised text is more reliable on `sonnet-5.5` or `opus-5.5` than on `haiku`.
+- **File errors** throw `InvalidRequestError`; branch on `error.code`: `AI_FILE_INVALID` (malformed block), `AI_TOO_MANY_FILES`, `AI_FILE_TOO_LARGE`, `AI_FILE_EMPTY`, `AI_FILE_UNSUPPORTED_TYPE`, `AI_FILE_ENCRYPTED`, `AI_FILE_UNREADABLE` (corrupt), `AI_FILE_TOO_MANY_PAGES`, `AI_FILE_CHANGED` (the Volume object changed while being read; retry), `AI_REQUEST_TOO_LARGE`. When the platform is busy holding other files, the call throws `RateLimitError` with `code` `AI_FILES_BUSY` and `retryAfter` 5. The SDK types (0.20.0) do not declare these fields on the AI error classes, so read them through a cast:
+
+```typescript
+} catch (error) {
+  if (error instanceof ketrics.AI.InvalidRequestError) {
+    const { code } = error as { code?: string };
+    if (code === "AI_FILE_ENCRYPTED") throw new Error("The PDF is password protected. Upload an unprotected copy.");
+    if (code === "AI_FILE_TOO_MANY_PAGES") throw new Error("The documents have more than 50 pages in total.");
+  }
+  throw error;
+}
+```
 
 ## ketrics.Pdf
 

@@ -129,7 +129,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.19.0 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.20.0 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
@@ -414,7 +414,7 @@ await ketrics.http.delete(`https://api.example.com/users/${userId}`, { headers }
 
 ### Also available
 
-`ketrics.AI.chat` (Anthropic models, `*-5.5` aliases), `ketrics.Pdf` (read/create/edit), `Excel.read` /
+`ketrics.AI.chat` (Anthropic models, `*-5.5` aliases, PDF and image files as context), `ketrics.Pdf` (read/create/edit), `Excel.read` /
 `toCsv`, `Messages.sendToGroup`, `Job.getStatus` / `Job.list`, `http.patch`, and the context objects
 `ketrics.tenant`, `ketrics.application` (`id`, `code`, `name`, `version?`, `deploymentId`) and
 `ketrics.runtime`. Details and examples: [BACKEND_REFERENCE.md](BACKEND_REFERENCE.md).
