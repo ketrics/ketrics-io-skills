@@ -1377,7 +1377,7 @@ Aliases (`ketrics.AI.Models`): `haiku` (`HAIKU`), `sonnet` (`SONNET`), `opus` (`
 - **effort:** `low`, `medium`, `high`, `xhigh` or `max`; `*-5.5` aliases only (ignored elsewhere). Default `medium` on `haiku-5.5` and `opus-5.5`, `high` on `sonnet-5.5`.
 - **Stop reasons:** `"end_turn"` = complete; `"max_tokens"` = cut at the limit; `"refusal"`; `"unknown"` = Bedrock sent none. Only `end_turn` means a finished reply: check `stopReason` before trusting the text.
 - **Time:** a long reply can take minutes. An HTTP function stops at its deadline (`ModelError`), so generate long documents in a background job (`ketrics.Job`).
-- **Continuation:** while `stopReason === "max_tokens"`, append the partial reply as an `assistant` message and `"Continue exactly where you stopped."` as a `user` message, call again, and concatenate. Stop at 20 messages and when the tenant's quota is exhausted.
+- **Continuation:** while `stopReason === "max_tokens"`, append the partial reply as an `assistant` message and `"Continue exactly where you stopped."` as a `user` message, call again, and concatenate. Stop at 20 messages, when the tenant's quota is exhausted, and if a reply comes back empty (thinking used the whole budget: lower `effort` or raise `maxTokens`).
 
 ```typescript
 const MAX_MESSAGES = 20;
@@ -1394,6 +1394,7 @@ export const writeLongReply = async (prompt: string) => {
       throw error;
     }
     text += res.content;
+    if (res.content === "") return { text, complete: false };
     if (res.stopReason !== "max_tokens") return { text, complete: res.stopReason === "end_turn" };
     if (messages.length + 2 > MAX_MESSAGES) return { text, complete: false };
     messages.push({ role: "assistant", content: res.content }, { role: "user", content: "Continue exactly where you stopped." });
