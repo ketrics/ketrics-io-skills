@@ -1349,26 +1349,57 @@ Non-2xx statuses do **not** throw: check `response.status`. The client sends `Us
 
 ## ketrics.AI
 
-Chat completions with Anthropic models (AWS Bedrock). Requires `@ketrics/sdk-backend` >= 0.19.0 for the `*-5.5` aliases in the types, and >= 0.20.0 for [file blocks](#files-as-context).
+Chat completions with Anthropic models (AWS Bedrock). Requires `@ketrics/sdk-backend` >= 0.19.0 for the `*-5.5` aliases in the types, >= 0.20.0 for [file blocks](#files-as-context), and >= 0.22.0 for `effort`.
 
 ```typescript
 const res = await ketrics.AI.chat({
   model: ketrics.AI.Models.SONNET_5_5, // default "haiku"
   systemPrompt: "Answer in one sentence.",
   messages: [{ role: "user", content: question }],
-  maxTokens: 512, // default 1024, max 4096
+  maxTokens: 512, // default 1024, max 32000
+  effort: "low", // 5.5 aliases only
 });
 res.content; // the reply text
 res.usage; // { inputTokens, outputTokens }
 res.model; // alias used
-res.stopReason; // string
+res.stopReason; // "end_turn" | "max_tokens" | "refusal" | "unknown" (see Long replies)
 ```
 
 Aliases (`ketrics.AI.Models`): `haiku` (`HAIKU`), `sonnet` (`SONNET`), `opus` (`OPUS`), `haiku-5.5` (`HAIKU_5_5`), `sonnet-5.5` (`SONNET_5_5`), `opus-5.5` (`OPUS_5_5`); any other value throws `InvalidRequestError` (`sonnet-4.5` was removed in 0.20.0). `chat` is stateless: send the whole conversation each call, alternating `user`/`assistant`.
 
-- **Limits:** at most 20 messages; text `content` non-empty and at most 50,000 characters; `systemPrompt` up to 10,000 characters. `temperature` (0-1, default 0.7) is **ignored by the `*-5.5` aliases**, which reject sampling parameters. On the `*-5.5` aliases thinking counts toward `maxTokens`: leave headroom, a reply cut short ends with `stopReason: "max_tokens"`.
+- **Limits:** at most 20 messages; text `content` non-empty and at most 50,000 characters; `systemPrompt` up to 10,000 characters. `temperature` (0-1, default 0.7) is **ignored by the `*-5.5` aliases**, which reject sampling parameters.
 - **Access:** the tenant plan must include AI, the app's role must grant `ai:InvokeModel` for the alias (resource `ai:<alias>`), the tenant may restrict which aliases are allowed, calls are rate limited per plan, and tokens count against a monthly tenant quota. The call counts toward the handler's execution timeout.
 - **Errors** (`ketrics.AI.*`): `FeatureDisabledError`, `AccessDeniedError` (`.model`), `RateLimitError` (`.retryAfter`), `QuotaExceededError` (`.limit`, `.remaining`), `InvalidRequestError` (`.reason`, `.code`), `ModelError`. Show the user a plain message for the first four; never retry `QuotaExceededError`.
+
+### Long replies
+
+- **Output size:** `maxTokens` up to 32,000, also capped by the tenant's remaining monthly tokens. On the `*-5.5` aliases thinking counts toward it: leave headroom, and for drafting set `effort: "low"` (or `"medium"`). A reply cut short ends with `stopReason: "max_tokens"`.
+- **effort:** `low`, `medium`, `high`, `xhigh` or `max`; `*-5.5` aliases only (ignored elsewhere). Default `medium` on `haiku-5.5` and `opus-5.5`, `high` on `sonnet-5.5`.
+- **Stop reasons:** `"end_turn"` = complete; `"max_tokens"` = cut at the limit; `"refusal"`; `"unknown"` = Bedrock sent none. Only `end_turn` means a finished reply: check `stopReason` before trusting the text.
+- **Time:** a long reply can take minutes. An HTTP function stops at its deadline (`ModelError`), so generate long documents in a background job (`ketrics.Job`).
+- **Continuation:** while `stopReason === "max_tokens"`, append the partial reply as an `assistant` message and `"Continue exactly where you stopped."` as a `user` message, call again, and concatenate. Stop at 20 messages and when the tenant's quota is exhausted.
+
+```typescript
+const MAX_MESSAGES = 20;
+
+export const writeLongReply = async (prompt: string) => {
+  const messages: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: prompt }];
+  let text = "";
+  for (;;) {
+    let res;
+    try {
+      res = await ketrics.AI.chat({ model: ketrics.AI.Models.SONNET_5_5, maxTokens: 32000, effort: "low", messages });
+    } catch (error) {
+      if (error instanceof ketrics.AI.QuotaExceededError) return { text, complete: false };
+      throw error;
+    }
+    text += res.content;
+    if (res.stopReason !== "max_tokens") return { text, complete: res.stopReason === "end_turn" };
+    if (messages.length + 2 > MAX_MESSAGES) return { text, complete: false };
+    messages.push({ role: "assistant", content: res.content }, { role: "user", content: "Continue exactly where you stopped." });
+  }
+};
+```
 
 ### Files as context
 
@@ -1390,7 +1421,7 @@ export const draftReply = async (payload: { fileKey?: string; instructions?: str
   const res = await ketrics.AI.chat({
     model: ketrics.AI.Models.SONNET_5_5,
     systemPrompt: SYSTEM_PROMPT,
-    maxTokens: 4096,
+    maxTokens: 8192,
     messages: [
       {
         role: "user",
