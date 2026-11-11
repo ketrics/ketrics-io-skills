@@ -1,6 +1,6 @@
 ---
 name: ketrics-app
-description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, PDF generation, AI chat, Volume file storage, messaging, comments, environment variables, shared configuration parameters, the in-app user guide ("guía de uso") every app ships behind an ⓘ header button, or deploying to the Ketrics platform.
+description: Scaffolds and builds Ketrics tenant applications with backend handlers, frontend React UI, and platform SDK integrations. Use when creating a new Ketrics app, adding backend handlers, organizing or refactoring the backend into domain-oriented files (splitting a monolithic index.ts), setting up database connections, DocumentDB storage, Excel exports, PDF generation, Word documents, AI chat, Volume file storage, messaging, comments, environment variables, shared configuration parameters, the in-app user guide ("guía de uso") every app ships behind an ⓘ header button, or deploying to the Ketrics platform.
 ---
 
 # Ketrics Application Builder
@@ -129,7 +129,7 @@ version:
 mkdir -p backend/src
 cd backend
 npm init -y
-npm install -D @ketrics/sdk-backend@0.20.0 esbuild typescript @types/node
+npm install -D @ketrics/sdk-backend@0.21.0 esbuild typescript @types/node
 ```
 
 **`backend/package.json` scripts:**
@@ -414,7 +414,7 @@ await ketrics.http.delete(`https://api.example.com/users/${userId}`, { headers }
 
 ### Also available
 
-`ketrics.AI.chat` (Anthropic models, `*-5.5` aliases, PDF and image files as context), `ketrics.Pdf` (read/create/edit), `Excel.read` /
+`ketrics.AI.chat` (Anthropic models, `*-5.5` aliases, PDF and image files as context), `ketrics.Pdf` (read/create/edit), `ketrics.Word` (create and read .docx), `Excel.read` /
 `toCsv`, `Messages.sendToGroup`, `Job.getStatus` / `Job.list`, `http.patch`, and the context objects
 `ketrics.tenant`, `ketrics.application` (`id`, `code`, `name`, `version?`, `deploymentId`) and
 `ketrics.runtime`. Details and examples: [BACKEND_REFERENCE.md](BACKEND_REFERENCE.md).
