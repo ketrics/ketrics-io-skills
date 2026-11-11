@@ -678,7 +678,7 @@ const buffer = await excel.toBuffer();
 ### Read and convert an existing workbook
 
 ```typescript
-const wb = await ketrics.Excel.read(buffer); // a Buffer, e.g. read from a Volume
+const wb = await ketrics.Excel.read(buffer); // a Buffer or `volume.get().content`
 const ws = wb.getWorksheet("Sheet1") ?? wb.worksheets[0]; // by name or index; undefined if missing
 const rows = ws.getSheetValues(); // ExcelCellValue[][]
 ws.eachRow((row, n) => console.log(n, row.values));
@@ -1441,6 +1441,43 @@ const buffer = await pdf.toBuffer(); // then volume.put(key, buffer)
 
 Coordinates are points from the bottom-left; colors are `rgb` values 0-1. `drawText` is async (`await` it); `drawRectangle`, `drawLine`, `drawCircle`, `drawImage` are sync. Pages: `getPage(i)`, `getPages()`, `getPageCount()`, `insertPage`, `removePage`, `copyPages(otherDoc, [indices])` (returns pages to insert). Metadata: `set/getTitle|Author|Subject|Keywords|Creator|Producer`. Input over 50 MB is refused. Errors: `ketrics.Pdf.ParseError`, `ketrics.Pdf.WriteError`.
 
+## ketrics.Word
+
+Create Word (.docx) documents and read the text and tables of existing ones (runs inside the sandbox worker, like Excel and Pdf). Requires `@ketrics/sdk-backend` >= 0.21.0.
+
+```typescript
+const doc = ketrics.Word.create({ pageSize: "A4", title: "Invoice 1042", font: "Calibri", fontSize: 11 });
+doc
+  .setHeader("Acme Billing")
+  .setFooter("Page {page} of {pages}") // {page} and {pages} become the page number and count
+  .addHeading("Invoice 1042", 1)
+  .addParagraph(["Total due: ", { text: "USD 1,250.00", bold: true, color: "B00020" }, " by 30 November."], { spacingAfter: 12 })
+  .addList(["Design review", "Implementation", "Support"], { ordered: false })
+  .addTable([["Item", "Hours", "Amount"], ["Design", 4, 400]], { headerRow: true, columnWidths: [3, 1, 1] })
+  .addImage(logoPng, { width: 160, height: 48, align: "right" }) // PNG or JPEG only, pixels at 96 dpi
+  .addPageBreak();
+
+const buffer = await doc.toBuffer(); // then volume.put(key, buffer) and generateDownloadUrl, as for Excel
+```
+
+Every `add...`/`set...` method returns the same builder, so calls chain. Content (`WordInline`) is a string, a styled run `{ text, bold?, italic?, underline?, strike?, size?, color?, font? }` (`size` in points, `color` as `RRGGBB`), or an array mixing both. Create options: `pageSize` (`A4`, `Letter`, `Legal`, `A3`, `A5`), `orientation`, `margins` (points), `title`, `author`, `subject`, `font`, `fontSize`. Paragraph options: `align`, `spacingBefore`, `spacingAfter`. Table options: `headerRow`, `columnWidths` (relative), `fontSize`.
+
+Reading returns the body as plain text and blocks in document order. `read` takes a Buffer or the `Uint8Array` from `volume.get()`:
+
+```typescript
+const file = await volume.get("contracts/agreement.docx");
+const { text, blocks, properties } = await ketrics.Word.read(file.content);
+const tables = blocks.filter((b) => b.type === "table"); // { type: "table", rows: string[][] }
+```
+
+A paragraph block is `{ type: "paragraph", text, style?, headingLevel?, listLevel? }`. Formatting, images, headers, footers, comments and tracked deletions are not returned.
+
+**Limits.** Reading: input at most 50 MB (`WORD_MAX_INPUT_BYTES`), 5,000 archive entries, 100,000 blocks, `document.xml` at most 10 MiB inflated, the content-types, styles and properties parts at most 2 MiB each; ZIP64, encrypted files, legacy `.doc`, password-protected files and files with a DTD are refused. Creating: at most 50,000 elements and 5,000,000 characters; images at most 10 MiB each and 40 MiB in total.
+
+**Not supported:** editing or filling an existing .docx (read it, then build a new one), hyperlinks, footnotes, a table of contents, merged cells, shading, custom borders, nested tables, several sections, custom styles, images other than PNG and JPEG, and Word-to-PDF conversion.
+
+Errors: `ketrics.Word.ParseError` (every `read()` refusal) and `ketrics.Word.WriteError` (invalid builder input, limits, packing failures), both with `reason`; guard with `ketrics.Word.isErrorType(err, ketrics.Word.ParseError)`.
+
 ## Error classes
 
 Every module groups its errors under its namespace, and each has `isError(err)` and `isErrorType(err, Class)` guards. Failures **throw**; branch on the class, not on message text.
@@ -1453,7 +1490,7 @@ Every module groups its errors under its namespace, and each has `isError(err)` 
 | `Secret` / `Parameter` | `NotFoundError`, `AccessDeniedError`, plus `DecryptionError`, `PayloadTooLargeError`, `ReservedContextKeyError` (Secret) and `InvalidJsonError` (Parameter) |
 | `Messages` | `ValidationError`, `GroupNotFoundError`, `PermissionDeniedError` |
 | `Job` | `NotFoundError`, `InvalidFunctionError`, `ExecutionError` |
-| `Excel` / `Pdf` | `ParseError`, `WriteError` |
+| `Excel` / `Pdf` / `Word` | `ParseError`, `WriteError` |
 | `Users` | `PermissionDeniedError` |
 | `Applications` | `NotFoundError`, `NotDeployedError`, `PermissionDeniedError`, `InvocationError`, `TimeoutError` |
 | `AI` | `FeatureDisabledError`, `AccessDeniedError`, `RateLimitError`, `QuotaExceededError`, `InvalidRequestError`, `ModelError` |
