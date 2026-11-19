@@ -214,8 +214,12 @@ does, so it describes the app as it works today, in business language. Start fro
 
 Rules:
 
-- **Business language.** No handler names, SQL, environment variable names or code.
-- **No secrets, no customer data** (real names, emails, account numbers) and **no internal hostnames**.
+- **Business language.** No handler names, SQL, environment variable names or code. Name the business
+  data, not the technical endpoint. Business users of the app read the README too, so write it for them.
+- **Written for people.** No instructions, notes or prompts addressed to an AI, assistant or agent.
+- **No secrets or credentials.** No URLs, IP addresses, hostnames, file paths, or account, bucket or
+  resource identifiers (connection, volume, secret codes).
+- **No real people, customers, amounts, prices or contract terms.** Use made-up examples.
 - **At most 100 KB.**
 - **Same PR as the change.** The README and the in-app guide (`frontend/src/utils/guia.ts`) change in the
   PR that changes the flow, a rule, a role or an integration. Deploying a version whose README describes
@@ -607,8 +611,8 @@ const items = result.items.filter((item) => {
 - [ ] The app's CLAUDE.md says: when the flow, a file format, the roles or the audit change, the
       guide changes in the same PR (and "Adding a handler" ends with "update the guide")
 - [ ] README.md at the project root with the eight sections of "README (required)"; business
-      language, no secrets or customer data, at most 100 KB; updated in the same PR as the flow,
-      rules, roles or integrations it describes
+      language, written for people (no prompts to an AI), no secrets, identifiers or customer data,
+      at most 100 KB; updated in the same PR as the flow, rules, roles or integrations it describes
 - [ ] Browser uploads: getUploadUrl returns generateUploadUrl's headers as uploadHeaders; the
       frontend PUTs with exactly those headers and checks response.ok; the processing handler
       only accepts keys under the user's own prefix

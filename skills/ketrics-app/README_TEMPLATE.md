@@ -4,7 +4,10 @@
   Template for the app's README.md (project root). Required by the ketrics-app skill, section
   "README (required)". Describe the app as it works today, in business language. Delete these
   comments, and any section that does not apply, but keep the eight headings in this order.
-  No handler names, SQL, environment variable names, secrets, customer data or internal hostnames.
+  Written for people, business users included: no instructions, notes or prompts addressed to an
+  AI, assistant or agent. No handler names, SQL, environment variable names or code. No secrets or
+  credentials, no URLs, IP addresses, hostnames, file paths or account, bucket or resource
+  identifiers, no real people, customers, amounts, prices or contract terms (use made-up examples).
   Keep it under 100 KB. Update it in the same PR as the flow, rule, role or integration it describes.
 -->
 
@@ -49,7 +52,7 @@
 ## 6. Integrations
 
 <!-- What the app receives from and sends to other systems: the system, the direction, the format
-     and how often. Name the business data, not the technical endpoint. -->
+     and how often. Name the business data, not the technical endpoint (no URLs or identifiers). -->
 
 | System | Direction | Data | Format and frequency |
 | --- | --- | --- | --- |
