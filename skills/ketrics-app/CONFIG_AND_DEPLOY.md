@@ -616,6 +616,14 @@ cd frontend && npm run build && cd ..
 ketrics deploy --env .env
 ```
 
+**The README ships with the deploy.** `ketrics deploy` bundles `README.md` from the project root into the
+deployment ZIP and records the git commit the deploy was built from. The platform stores the README with
+that deployment, so the requirements agent reads the README of the version that is actually running. Before
+uploading, the CLI compares that commit with the application's last deployed commit: if files under
+`backend/` or `frontend/src/` changed and neither `README.md` nor `frontend/src/utils/guia.ts` did, it prints
+a warning. The warning never fails the deploy; no git repository, an unknown commit or a dirty tree only
+prints a note. Rules for the README's content: [SKILL.md → README (required)](SKILL.md#readme-required).
+
 ### CLI commands
 
 | Command | Does |
