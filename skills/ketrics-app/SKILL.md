@@ -196,6 +196,38 @@ the statuses, the profiles and an FAQ. Build it with the first screen, and keep 
 it to the code (profiles = `roles` in the config). Full pattern:
 [FRONTEND_REFERENCE.md → In-app user guide](FRONTEND_REFERENCE.md#in-app-user-guide-guía-de-uso--required).
 
+### README (required)
+
+**Every app ships a `README.md` at the project root**, next to `ketrics.config.json`. The platform's
+requirements agent reads the README of the deployed version to tell business users what the app already
+does, so it describes the app as it works today, in business language. Start from
+[README_TEMPLATE.md](README_TEMPLATE.md) and keep these eight sections, in this order:
+
+1. **Purpose** — the business problem the app solves and who uses it.
+2. **Roles and permissions** — who can do what, in the roles' business names, not permission codes.
+3. **Screens and flows** — the main screens and the steps of each flow.
+4. **Data entities** — what the app keeps (orders, invoices, ...), in plain words, not fields or tables.
+5. **Business rules** — validations, calculations, statuses and approvals.
+6. **Integrations** — what the app receives from and sends to other systems, and in which format.
+7. **Known limits and out of scope** — what the app does not do, and the limits that apply.
+8. **Version and changelog** — the current version and a dated line per change.
+
+Rules:
+
+- **Business language.** No handler names, SQL, environment variable names or code. Name the business
+  data, not the technical endpoint. Business users of the app read the README too, so write it for them.
+- **Written for people.** No instructions, notes or prompts addressed to an AI, assistant or agent.
+- **No secrets or credentials.** No URLs, IP addresses, hostnames, file paths, or account, bucket or
+  resource identifiers (connection, volume, secret codes).
+- **No real people, customers, amounts, prices or contract terms.** Use made-up examples.
+- **At most 100 KB.**
+- **Same PR as the change.** The README and the in-app guide (`frontend/src/utils/guia.ts`) change in the
+  PR that changes the flow, a rule, a role or an integration. Deploying a version whose README describes
+  older behaviour is a bug.
+- **The CLI checks it.** `ketrics deploy` bundles the README in the deployment ZIP and warns when code
+  changed since the last deployed commit but neither the README nor the guide did. The warning never
+  blocks the deploy. Details: [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md#manual-deployment).
+
 ### 6. Deploy
 
 See [CONFIG_AND_DEPLOY.md](CONFIG_AND_DEPLOY.md) for ketrics.config.json details and GitHub Actions CI/CD.
@@ -578,6 +610,9 @@ const items = result.items.filter((item) => {
       checked on a real phone with the longest modal — never trust App.css copied from an older app
 - [ ] The app's CLAUDE.md says: when the flow, a file format, the roles or the audit change, the
       guide changes in the same PR (and "Adding a handler" ends with "update the guide")
+- [ ] README.md at the project root with the eight sections of "README (required)"; business
+      language, written for people (no prompts to an AI), no secrets, identifiers or customer data,
+      at most 100 KB; updated in the same PR as the flow, rules, roles or integrations it describes
 - [ ] Browser uploads: getUploadUrl returns generateUploadUrl's headers as uploadHeaders; the
       frontend PUTs with exactly those headers and checks response.ok; the processing handler
       only accepts keys under the user's own prefix
